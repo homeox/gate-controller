@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gate Control</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Gate</h1>
+        <p id="subline">Sign in to continue</p>
+      </div>
+      <div id="statusPill" class="pill offline">Offline</div>
+    </header>
+
+    <section id="loginView" class="panel">
+      <h2>Sign In</h2>
+      <label>Email <input id="email" type="email" autocomplete="email"></label>
+      <label>Password <input id="password" type="password" autocomplete="current-password"></label>
+      <button id="loginBtn" class="primary">Sign in</button>
+      <p id="loginError" class="error"></p>
+    </section>
+
+    <section id="inviteView" class="panel hidden">
+      <h2>Gate Invite</h2>
+      <p class="muted">Create your gate login from this invite.</p>
+      <label>Your name <input id="inviteName" autocomplete="name"></label>
+      <label>Username <input id="inviteUsername" autocomplete="username"></label>
+      <label>Email <input id="inviteEmail" type="email" autocomplete="email"></label>
+      <label>Password <input id="invitePassword" type="password" autocomplete="new-password"></label>
+      <button id="claimInviteBtn" class="primary">Create gate login</button>
+      <p id="inviteError" class="error"></p>
+    </section>
+
+    <section id="gateView" class="panel hidden">
+      <div class="hero-card">
+        <div>
+          <span class="eyebrow" id="userRole">Gate access</span>
+          <h2 id="userName">User</h2>
+          <p id="userSummary">Ready when you are.</p>
+        </div>
+        <div class="hero-actions">
+          <button id="adminBtn" class="ghost hidden">Admin</button>
+          <button id="logoutBtn" class="ghost">Sign out</button>
+        </div>
+      </div>
+
+      <button id="openGateBtn" class="gate-button">GATE</button>
+      <p id="gateMessage" class="message">Ready</p>
+
+      <div class="stats-grid">
+        <div class="stat-card"><span>Your uses</span><strong id="userOpenCount">0</strong></div>
+        <div class="stat-card"><span>Your last access</span><strong id="userLastAccess">None yet</strong></div>
+        <div class="stat-card"><span>Last command</span><strong id="lastCommand">None</strong></div>
+        <div class="stat-card"><span>Device seen</span><strong id="deviceSeen">Unknown</strong></div>
+      </div>
+
+      <details class="fold settings-fold">
+        <summary>Settings</summary>
+        <div class="custom-grid">
+          <label>Theme
+            <select id="themeSelect">
+              <option value="fresh">Fresh green</option>
+              <option value="marshmallow">Marshmallow pink</option>
+              <option value="goth">Angry black goth</option>
+              <option value="sunset">Poolside sunset</option>
+              <option value="ocean">Blue lagoon</option>
+            </select>
+          </label>
+          <label>Background photo
+            <input id="backgroundInput" type="file" accept="image/*">
+          </label>
+          <button id="clearBackgroundBtn" class="ghost" type="button">Clear photo</button>
+        </div>
+      </details>
+
+      <div class="box recent-box">
+        <h3>Your Recent Access</h3>
+        <div id="userLogsList" class="timeline"></div>
+      </div>
+    </section>
+
+    <section id="adminView" class="panel hidden">
+      <div class="section-head">
+        <h2>Admin</h2>
+        <div>
+          <button id="backToGateBtn" class="ghost">‹ Back</button>
+          <button id="refreshAdminBtn" class="ghost">Refresh</button>
+        </div>
+      </div>
+
+      <div class="stats-grid admin-stats">
+        <div class="stat-card"><span>Total gate commands</span><strong id="adminTotalCommands">0</strong></div>
+        <div class="stat-card"><span>Non-family entries</span><strong id="adminNonFamily">0</strong></div>
+        <div class="stat-card"><span>Enabled users</span><strong id="adminEnabledUsers">0</strong></div>
+        <div class="stat-card"><span>Last gate command</span><strong id="adminLastCommand">None</strong></div>
+      </div>
+
+      <div class="box emergency-box">
+        <div class="section-head compact-head">
+          <div>
+            <h3>Emergency pulse</h3>
+            <p id="emergencyStatus" class="muted">Ready. Sends one 10 second pulse. ESP handles rapid repeats safely.</p>
+          </div>
+          <button id="emergencyPulseBtn" class="danger big-action" type="button">10 Second Pulse</button>
+        </div>
+      </div>
+
+      <div class="box config-box">
+        <div class="section-head compact-head">
+          <div>
+            <h3>ESP tuning</h3>
+            <p id="configStatus" class="muted">Live values are clamped by the ESP before use.</p>
+          </div>
+          <button id="saveConfigBtn" class="primary big-action" type="button">Save Config</button>
+        </div>
+        <div class="custom-grid tune-grid">
+          <label>Gate pulse ms <input id="configPulseMs" type="number" min="100" max="5000" step="50"></label>
+          <label>Emergency pulse ms <input id="configEmergencyPulseMs" type="number" min="100" max="10000" step="100"></label>
+          <label>Idle heartbeat ms <input id="configHeartbeatIdleMs" type="number" min="2000" max="60000" step="250"></label>
+          <label>ESP poll ms <input id="configPollMs" type="number" min="100" max="5000" step="50"></label>
+          <label>Command timeout ms <input id="configCommandTimeoutMs" type="number" min="500" max="3000" step="100"></label>
+        </div>
+        <p id="reportedConfigSummary" class="muted">ESP reported config not loaded yet.</p>
+      </div>
+
+      <div id="inviteForm" class="box admin-primary invite-console">
+        <div class="section-head compact-head">
+          <div>
+            <h3>Add someone</h3>
+            <p class="muted">Create one family login link. They choose their own username and password.</p>
+          </div>
+          <button id="quickInviteBtn" class="primary big-action" type="button">Add User</button>
+        </div>
+
+        <div id="inviteResult" class="invite-result hidden">
+          <label>Send this <textarea id="quickInviteText" readonly rows="4"></textarea></label>
+          <input id="inviteLink" readonly aria-label="Invite link">
+        </div>
+
+        <details class="fold">
+          <summary>Options</summary>
+          <div class="custom-grid">
+            <label>Access group
+              <select id="inviteAccessGroup">
+                <option value="family">family</option>
+                <option value="trusted">trusted</option>
+                <option value="tradie">tradie</option>
+                <option value="guest">guest</option>
+              </select>
+            </label>
+          </div>
+        </details>
+
+        <details class="fold">
+          <summary>Recent invites</summary>
+          <div id="invitesList" class="list"></div>
+        </details>
+      </div>
+
+      <details class="fold">
+        <summary>Users</summary>
+        <div class="grid">
+          <form id="userForm" class="box hidden">
+            <h3>Edit Selected User</h3>
+            <label>UID <input id="editUid" required></label>
+            <label>Name <input id="editName" required></label>
+            <label>Email <input id="editEmail" type="email" required></label>
+            <label>Role
+              <select id="editRole">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <label>Access group
+              <select id="editAccessGroup">
+                <option value="family">family</option>
+                <option value="trusted">trusted</option>
+                <option value="tradie">tradie</option>
+                <option value="guest">guest</option>
+              </select>
+            </label>
+            <label>Expires <input id="editExpires" type="datetime-local"></label>
+            <label class="check"><input id="editEnabled" type="checkbox" checked> Enabled</label>
+            <button class="primary" type="submit">Save user</button>
+            <button id="deleteUserBtn" class="danger" type="button">Delete profile</button>
+          </form>
+
+          <div>
+            <div id="usersList" class="list"></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="fold">
+        <summary>Command Trace</summary>
+        <div id="commandRecordsList" class="list"></div>
+      </details>
+
+      <details class="fold">
+        <summary>Access Log</summary>
+        <div id="logsList" class="list"></div>
+      </details>
+    </section>
+  </main>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

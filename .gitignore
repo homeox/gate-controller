@@ -1,0 +1,25 @@
+# Secrets and local credentials
+esp32-com3/src/secrets.h
+gate-cloud/public/firebase-config.js
+gate-cloud/.firebaserc
+gate-android/local.properties
+
+# Build outputs and caches
+**/.pio/
+**/.gradle/
+**/build/
+**/node_modules/
+**/.firebase/
+*.apk
+*.aab
+
+# Local screenshots / scratch captures
+gate-android/*.png
+*.log
+*.tmp
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

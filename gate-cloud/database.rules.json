@@ -1,0 +1,143 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "users": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (!data.exists() && auth.uid === $uid && newData.child('role').val() === 'user' && newData.child('enabled').val() === true && newData.child('username').val().matches(/^[a-z0-9_]{3,24}$/) && root.child('usernames').child(newData.child('username').val()).val() === auth.uid && root.child('invites').child(newData.child('inviteCode').val()).child('claimedBy').val() === auth.uid && newData.child('accessGroup').val() === root.child('invites').child(newData.child('inviteCode').val()).child('accessGroup').val() && newData.child('expiresAt').val() === root.child('invites').child(newData.child('inviteCode').val()).child('accessExpiresAt').val()))",
+        ".validate": "newData.hasChildren(['name', 'email', 'role', 'enabled', 'expiresAt', 'accessGroup']) && newData.child('accessGroup').val().matches(/^(family|trusted|tradie|guest)$/) && newData.child('role').val().matches(/^(admin|user|device)$/)"
+      }
+    },
+
+    "usernames": {
+      "$username": {
+        ".read": "auth != null",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (!data.exists() && newData.val() === auth.uid) || (data.exists() && data.val() === auth.uid && !newData.exists()))",
+        ".validate": "!newData.exists() || newData.isString()"
+      }
+    },
+
+    "invites": {
+      "$code": {
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || !data.child('claimedBy').exists() || data.child('claimedBy').val() === auth.uid)",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || (data.exists() && !data.child('claimedBy').exists() && newData.child('claimedBy').val() === auth.uid && newData.child('accessGroup').val() === data.child('accessGroup').val() && newData.child('accessExpiresAt').val() === data.child('accessExpiresAt').val() && newData.child('expiresAt').val() === data.child('expiresAt').val() && data.child('expiresAt').val() > now))",
+        ".validate": "newData.hasChildren(['accessGroup', 'accessExpiresAt', 'expiresAt', 'createdAt', 'createdBy']) && newData.child('accessGroup').val().matches(/^(family|trusted|tradie|guest)$/)"
+      }
+    },
+
+    "inviteAudits": {
+      "$code": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        "$eventId": {
+          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || newData.child('uid').val() === auth.uid)",
+          ".validate": "newData.hasChildren(['event', 'at', 'code']) && newData.child('code').val() === $code && newData.child('event').val().matches(/^(link_created|claim_attempt|claim_success|claim_failed)$/)"
+        }
+      }
+    },
+
+    "settings": {
+      "alerts": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        ".validate": "newData.hasChildren(['enabled', 'notifyNonFamily', 'recipients'])"
+      }
+    },
+
+    "userLogs": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        "$logId": {
+          ".write": "auth != null && ((!data.exists() && auth.uid === $uid && root.child('users').child(auth.uid).child('enabled').val() === true && root.child('users').child(auth.uid).child('expiresAt').val() > now && newData.child('requestedBy').val() === auth.uid) || (data.exists() && (root.child('users').child(auth.uid).child('role').val() === 'device' || data.child('requestedBy').val() === auth.uid)))",
+          ".validate": "(newData.hasChildren(['id', 'type', 'status', 'requestedBy', 'requestedByName', 'requestedAt', 'expiresAt', 'accessGroup', 'alertEligible']) && newData.child('requestedBy').val() === $uid && newData.child('accessGroup').val() === root.child('users').child($uid).child('accessGroup').val()) || (data.exists() && (root.child('users').child(auth.uid).child('role').val() === 'device' || data.child('requestedBy').val() === auth.uid) && newData.child('id').val() === data.child('id').val() && newData.child('requestedBy').val() === data.child('requestedBy').val() && newData.child('status').val().matches(/^(pending|active|done|failed|expired)$/))"
+        }
+      }
+    },
+
+    "gate": {
+      "device": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('enabled').val() === true",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+      },
+
+      "state": {
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('enabled').val() === true || root.child('users').child(auth.uid).child('role').val() === 'device')",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+      },
+
+      "config": {
+        "desired": {
+          ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'device')",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+          ".validate": "newData.hasChildren(['pulseMs', 'emergencyPulseMs', 'heartbeatIdleMs', 'pollMs', 'commandTimeoutMs', 'revision', 'updatedAt', 'updatedBy']) && newData.child('pulseMs').isNumber() && newData.child('emergencyPulseMs').isNumber() && newData.child('heartbeatIdleMs').isNumber() && newData.child('pollMs').isNumber() && newData.child('commandTimeoutMs').isNumber() && newData.child('commandTimeoutMs').val() <= 3000"
+        },
+        "reported": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('enabled').val() === true",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        }
+      },
+
+      "liveCommand": {
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('enabled').val() === true || root.child('users').child(auth.uid).child('role').val() === 'device')",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('enabled').val() === true && root.child('users').child(auth.uid).child('expiresAt').val() > now && ((newData.child('requestedBy').val() === auth.uid && newData.child('requestedAt').val() >= now - 5000 && newData.child('requestedAt').val() <= now + 5000 && newData.child('ttlMs').val() > 0 && newData.child('ttlMs').val() <= 3000 && (newData.child('type').val() === 'pulse' || (newData.child('type').val() === 'emergencyPulse' && root.child('users').child(auth.uid).child('role').val() === 'admin'))) || (data.exists() && data.child('requestedBy').val() === auth.uid && newData.child('id').val() === data.child('id').val() && data.child('status').val() === 'pending' && newData.child('status').val().matches(/^(expired|failed)$/) && newData.child('doneAt').val() >= data.child('expiresAt').val()))",
+        ".validate": "newData.hasChildren(['id', 'type', 'status', 'sessionId', 'requestedBy', 'requestedByName', 'requestedAt', 'expiresAt'])",
+        "status": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device' && data.parent().child('status').val().matches(/^(pending|active|released)$/) && newData.val().matches(/^(active|done|failed|expired)$/)"
+        },
+        "activeAt": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        },
+        "relayOnAt": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        },
+        "espSeenAt": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        },
+        "doneAt": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        },
+        "closedAt": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        },
+        "resultReason": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        }
+      },
+
+      "logs": {
+        ".indexOn": ["requestedAt"],
+        ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        "$logId": {
+          ".write": "auth != null && ((!data.exists() && root.child('users').child(auth.uid).child('enabled').val() === true && root.child('users').child(auth.uid).child('expiresAt').val() > now && newData.child('requestedBy').val() === auth.uid) || (data.exists() && (root.child('users').child(auth.uid).child('role').val() === 'device' || data.child('requestedBy').val() === auth.uid)))",
+          ".validate": "(newData.hasChildren(['id', 'type', 'status', 'requestedBy', 'requestedByName', 'requestedAt', 'expiresAt', 'accessGroup', 'alertEligible']) && newData.child('accessGroup').val() === root.child('users').child(auth.uid).child('accessGroup').val() && ((newData.child('accessGroup').val() === 'family' && newData.child('alertEligible').val() === false) || (newData.child('accessGroup').val() !== 'family' && newData.child('alertEligible').val() === true))) || (data.exists() && (root.child('users').child(auth.uid).child('role').val() === 'device' || data.child('requestedBy').val() === auth.uid) && newData.child('id').val() === data.child('id').val() && newData.child('requestedBy').val() === data.child('requestedBy').val() && newData.child('status').val().matches(/^(pending|active|done|failed|expired)$/))",
+          "status": {
+            ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device' && data.parent().child('status').val().matches(/^(pending|active|released)$/) && newData.val().matches(/^(done|failed|expired)$/)"
+          },
+          "doneAt": {
+            ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+          }
+        }
+      },
+
+      "commandRecords": {
+        ".indexOn": ["requestedAt", "status", "resultReason", "requestedBy", "sessionId"],
+        "$commandId": {
+          ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || data.child('requestedBy').val() === auth.uid)",
+          ".write": "auth != null && ((!data.exists() && root.child('users').child(auth.uid).child('enabled').val() === true && root.child('users').child(auth.uid).child('expiresAt').val() > now && newData.child('id').val() === $commandId && newData.child('requestedBy').val() === auth.uid) || (data.exists() && (root.child('users').child(auth.uid).child('role').val() === 'device' || data.child('requestedBy').val() === auth.uid)))",
+          ".validate": "newData.hasChildren(['id', 'type', 'status', 'requestedBy', 'requestedByName', 'requestedAt', 'expiresAt'])"
+        }
+      },
+
+      "commandEvents": {
+        "$commandId": {
+          ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('gate').child('commandRecords').child($commandId).child('requestedBy').val() === auth.uid)",
+          "$eventId": {
+            ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'device' || root.child('gate').child('commandRecords').child($commandId).child('requestedBy').val() === auth.uid || (root.child('users').child(auth.uid).child('enabled').val() === true && root.child('users').child(auth.uid).child('expiresAt').val() > now && newData.child('actorUid').val() === auth.uid))",
+            ".validate": "newData.hasChildren(['commandId', 'event', 'at']) && newData.child('commandId').val() === $commandId"
+          }
+        }
+      }
+    }
+  }
+}
