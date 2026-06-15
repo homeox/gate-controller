@@ -1,7 +1,7 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '2026-06-14.1730';
+const APP_VERSION = '0.2.1+20260615';
 
 const els = {
   statusPill: document.getElementById('statusPill'),

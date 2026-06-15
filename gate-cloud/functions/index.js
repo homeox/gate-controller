@@ -7,6 +7,7 @@ const db = admin.database();
 const COMMAND_TIMEOUT_MS = 3000;
 const LIVE_SLOT_RETIRE_MS = 10000;
 const INSTANCE = 'gate-controller-1b092-default-rtdb';
+const FUNCTION_VERSION = '0.2.1+20260615';
 
 function now() {
   return Date.now();
@@ -41,7 +42,8 @@ function commandEvent(command, event, reason, at = now()) {
     actor: 'firebase',
     sessionId: command.sessionId || '',
     status: command.status || '',
-    reason
+    reason,
+    functionVersion: FUNCTION_VERSION
   };
 }
 
@@ -58,8 +60,16 @@ function commandRecordPatch(command, patch) {
     ttlMs: commandTtl(command),
     expiresAt: commandExpiresAt(command),
     source: command.source || 'web',
+    cloudFunctionVersion: FUNCTION_VERSION,
     ...patch
   };
+}
+
+function statusRank(status) {
+  if (status === 'done' || status === 'failed' || status === 'expired') return 3;
+  if (status === 'active') return 2;
+  if (status === 'pending') return 1;
+  return 0;
 }
 
 async function writeEvent(command, event, reason, at = now()) {
@@ -71,7 +81,15 @@ async function writeEvent(command, event, reason, at = now()) {
 
 async function patchRecord(command, patch) {
   if (!command || !command.id) return;
-  await db.ref(`gate/commandRecords/${command.id}`).update(commandRecordPatch(command, patch));
+  const ref = db.ref(`gate/commandRecords/${command.id}`);
+  if (patch.status) {
+    const snap = await ref.get();
+    const existing = snap.exists() ? snap.val() : null;
+    if (existing && statusRank(existing.status) > statusRank(patch.status)) {
+      return;
+    }
+  }
+  await ref.update(commandRecordPatch(command, patch));
 }
 
 async function expireIfStillPending(id, reason) {

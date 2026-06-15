@@ -13,6 +13,7 @@ The important design rule is simple: **there is no executable command queue**. T
 
 ## Current Live System
 
+- Project version: `0.2.1+20260615`
 - Firebase project: `gate-controller-1b092`
 - Hosting: `https://gate-controller-1b092.web.app/`
 - Realtime Database: `gate-controller-1b092-default-rtdb` in `asia-southeast1`
@@ -108,6 +109,8 @@ Build:
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -e esp32dev_ota
 ```
+
+PlatformIO build output is configured to `D:/GateControllerBuild/platformio` so generated firmware build files do not fill OneDrive.
 
 OTA upload:
 

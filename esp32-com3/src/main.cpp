@@ -7,6 +7,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "secrets.h"
@@ -39,7 +40,7 @@ constexpr uint64_t DEFAULT_CLOUD_COMMAND_MAX_AGE_MS = 3000;
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
 const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
-const char *FIRMWARE_VERSION = "gate-local-cloud-1";
+const char *FIRMWARE_VERSION = "0.2.1+20260615";
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -150,12 +151,13 @@ bool cloudEnabled() {
 }
 
 uint64_t nowEpochMs() {
-  const time_t seconds = time(nullptr);
-  if (seconds < 1700000000) {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  if (tv.tv_sec < 1700000000) {
     return 0;
   }
 
-  return static_cast<uint64_t>(seconds) * 1000ULL;
+  return (static_cast<uint64_t>(tv.tv_sec) * 1000ULL) + (static_cast<uint64_t>(tv.tv_usec) / 1000ULL);
 }
 
 String u64ToString(uint64_t value) {
