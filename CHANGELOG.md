@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.3.5+20260616] - 2026-06-16
+
+### Fixed
+
+- Removed browser-side ESP stale authority from the main gate page; heartbeat age is now diagnostic display only and does not decide gate availability or main button state.
+
 ## [0.3.4+20260616] - 2026-06-16
 
 ### Fixed

@@ -1,7 +1,7 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '0.3.4+20260616';
+const APP_VERSION = '0.3.5+20260616';
 
 // Gate command boundary:
 // This web app is a GUI only. It never authors command time, expiry, TTL, or
@@ -91,7 +91,6 @@ let latestDesiredConfig = {};
 let cameraStarted = false;
 let cameraHls = null;
 const LOOK_KEY = 'gateLook';
-const DEVICE_HEARTBEAT_STALE_MS = 45000;
 const inviteCode = new URLSearchParams(window.location.search).get('invite') || '';
 const ACTIVE_COMMAND_STATUSES = new Set(['pending', 'active']);
 const FULL_ACCESS_EXPIRES_AT = 4102444800000;
@@ -218,7 +217,6 @@ function deviceHealth(now = Date.now()) {
   return {
     seen,
     age,
-    fresh: seen > 0 && age <= DEVICE_HEARTBEAT_STALE_MS,
     ip: (latestDevice && latestDevice.ip) || '',
     lastCode: Number((latestState && latestState.lastFirebaseCode) || (latestDevice && latestDevice.lastFirebaseCode) || 0),
     failures: Number((latestState && latestState.firebaseRequestFailureCount) || (latestDevice && latestDevice.firebaseRequestFailureCount) || 0),
@@ -291,20 +289,16 @@ function renderGateState() {
   const accessOk = canUseGate(currentProfile);
   const health = deviceHealth(now);
 
-  if (health.fresh) {
-    setOnline(true, 'Gate online');
-    els.deviceSeen.textContent = `${fmtTime(health.seen)} (${fmtAge(health.age)})`;
-  } else if (health.seen) {
-    setOnline(false, 'ESP stale');
-    const parts = [`stale ${fmtAge(health.age)}`];
+  setOnline(accessOk, accessOk ? 'Gate ready' : 'Access disabled');
+  if (health.seen) {
+    const parts = [`last seen ${fmtAge(health.age)}`];
     if (health.ip) parts.push(`IP ${health.ip}`);
     if (health.lastCode) parts.push(`last Firebase ${health.lastCode}`);
     if (health.consecutiveFailures) parts.push(`${health.consecutiveFailures} current failures`);
     if (health.recovery) parts.push(`recovery: ${health.recovery}`);
     els.deviceSeen.textContent = parts.join(' - ');
   } else {
-    setOnline(false, 'ESP unseen');
-    els.deviceSeen.textContent = 'No heartbeat yet';
+    els.deviceSeen.textContent = 'No heartbeat reported';
   }
 
   els.openGateBtn.classList.remove('idle', 'ready', 'lost');
@@ -316,8 +310,6 @@ function renderGateState() {
   if (!pendingCommandId) {
     if (!accessOk) {
       els.gateMessage.textContent = 'Access disabled or expired';
-    } else if (!health.fresh) {
-      els.gateMessage.textContent = 'ESP heartbeat stale; firmware recovery should be running';
     } else {
       els.gateMessage.textContent = 'Ready';
     }
