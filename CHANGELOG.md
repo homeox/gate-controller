@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.3.2+20260616] - 2026-06-16
+
+### Fixed
+
+- Moved the camera preview below the gate button and capped it to a small thumbnail-sized box.
+- Bumped the web version so browsers reload the corrected layout.
+
+## [0.3.1+20260616] - 2026-06-16
+
+### Fixed
+
+- Removed browser-authored gate command timing, expiry, TTL, and executable `gate/liveCommand` writes.
+- Added Firebase Function handling for `gate/commandRequests/{id}` so Firebase is the time authority.
+- Blocked normal users from writing command logs, command records, or `gate/liveCommand` directly in database rules.
+
+### Changed
+
+- Shrunk the camera panel into a thumbnail-sized preview.
+
 ## [0.3.0+20260616] - 2026-06-16
 
 ### Added

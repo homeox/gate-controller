@@ -113,6 +113,9 @@ The ESP is the final authority. The web app and Firebase do not queue commands.
 
 Required command behavior:
 
+- The web app is GUI-only and must not write command time, expiry, TTL, logs, records, or executable live commands.
+- The web app writes intent only to `gate/commandRequests/{id}`.
+- Firebase Functions stamps server time and publishes `gate/liveCommand`.
 - Firebase command slot is `gate/liveCommand`.
 - There must be no executable command queue.
 - One command equals one immediate action.

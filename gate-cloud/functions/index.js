@@ -7,10 +7,15 @@ const db = admin.database();
 const COMMAND_TIMEOUT_MS = 3000;
 const LIVE_SLOT_RETIRE_MS = 10000;
 const INSTANCE = 'gate-controller-1b092-default-rtdb';
-const FUNCTION_VERSION = '0.2.1+20260615';
+const FUNCTION_VERSION = '0.3.1+20260616';
 
 function now() {
   return Date.now();
+}
+
+function eventTimeMs(context) {
+  const parsed = context && context.timestamp ? Date.parse(context.timestamp) : 0;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : now();
 }
 
 function eventKey(at, event) {
@@ -26,10 +31,12 @@ function commandTtl(command) {
 }
 
 function commandRequestedAt(command) {
-  return Number(command.requestedAt || command.requestedAtEsp || command.requestedAtClient || 0);
+  return Number(command.requestedAt || command.requestedAtEsp || 0);
 }
 
 function commandExpiresAt(command) {
+  const explicit = Number(command.expiresAt || 0);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
   const requestedAt = commandRequestedAt(command);
   return requestedAt ? requestedAt + commandTtl(command) : 0;
 }
@@ -56,13 +63,49 @@ function commandRecordPatch(command, patch) {
     sessionId: command.sessionId || '',
     requestedAt: commandRequestedAt(command),
     requestedAtEsp: commandRequestedAt(command),
-    requestedAtClient: Number(command.requestedAtClient || 0),
     ttlMs: commandTtl(command),
     expiresAt: commandExpiresAt(command),
+    accessGroup: command.accessGroup || '',
+    alertEligible: Boolean(command.alertEligible),
     source: command.source || 'web',
     cloudFunctionVersion: FUNCTION_VERSION,
     ...patch
   };
+}
+
+function liveCommandFromRequest(request, profile, requestedAt) {
+  const ttlMs = commandTtl(request);
+  const accessGroup = profile.accessGroup || 'guest';
+  return {
+    id: request.id,
+    type: request.type || 'pulse',
+    status: 'pending',
+    sessionId: request.sessionId || '',
+    requestedBy: request.requestedBy || '',
+    requestedByName: request.requestedByName || profile.name || profile.email || 'User',
+    requestedAt,
+    requestedAtEsp: requestedAt,
+    ttlMs,
+    expiresAt: requestedAt + ttlMs,
+    accessGroup,
+    alertEligible: accessGroup !== 'family',
+    pageVisibility: request.pageVisibility || '',
+    userAgent: request.userAgent || '',
+    espLastSeenAtRequest: Number(request.espLastSeenAtRequest || 0),
+    espLastFirebaseCodeAtRequest: Number(request.espLastFirebaseCodeAtRequest || 0),
+    espRssiAtRequest: Number(request.espRssiAtRequest || 0),
+    durationMs: Number(request.durationMs || 0),
+    source: 'web',
+    firebaseReceivedAt: requestedAt,
+    cloudFunctionVersion: FUNCTION_VERSION
+  };
+}
+
+function isExecutableLiveCommand(command, at = now()) {
+  if (!command || !command.id) return false;
+  if (!/^(pending|active)$/.test(command.status || '')) return false;
+  const expiresAt = commandExpiresAt(command);
+  return !expiresAt || expiresAt > at;
 }
 
 function statusRank(status) {
@@ -89,7 +132,14 @@ async function patchRecord(command, patch) {
       return;
     }
   }
-  await ref.update(commandRecordPatch(command, patch));
+  const record = commandRecordPatch(command, patch);
+  const updates = {};
+  updates[`gate/commandRecords/${command.id}`] = record;
+  updates[`gate/logs/${command.id}`] = record;
+  if (record.requestedBy) {
+    updates[`userLogs/${record.requestedBy}/${command.id}`] = record;
+  }
+  await db.ref().update(updates);
 }
 
 async function expireIfStillPending(id, reason) {
@@ -142,6 +192,117 @@ async function retireOldLiveSlot() {
     await liveRef.remove();
   }
 }
+
+exports.onCommandRequestCreated = functions
+  .runWith({ maxInstances: 10, timeoutSeconds: 30, memory: '256MB' })
+  .region('asia-southeast1')
+  .database.instance(INSTANCE)
+  .ref('/gate/commandRequests/{commandId}')
+  .onCreate(async (snap, context) => {
+    const request = snap.val();
+    const requestedAt = eventTimeMs(context);
+    const processedAt = now();
+
+    if (!request || !request.id || request.id !== context.params.commandId || !request.requestedBy) {
+      await snap.ref.update({
+        status: 'rejected',
+        resultReason: 'firebase_rejected_malformed',
+        processedAt
+      });
+      return null;
+    }
+
+    if (processedAt - requestedAt > COMMAND_TIMEOUT_MS) {
+      const staleCommand = liveCommandFromRequest(request, {}, requestedAt);
+      await patchRecord(staleCommand, {
+        status: 'expired',
+        doneAt: processedAt,
+        closedAt: processedAt,
+        resultReason: 'firebase_request_stale',
+        firebaseRejectedAt: processedAt
+      });
+      await writeEvent(staleCommand, 'request_rejected', 'firebase_request_stale', processedAt);
+      await snap.ref.update({
+        status: 'rejected',
+        resultReason: 'firebase_request_stale',
+        processedAt
+      });
+      return null;
+    }
+
+    const profileSnap = await db.ref(`users/${request.requestedBy}`).get();
+    const profile = profileSnap.exists() ? profileSnap.val() : {};
+    const enabled = profile.enabled === true && Number(profile.expiresAt || 0) > processedAt;
+    const adminEmergency = request.type !== 'emergencyPulse' || profile.role === 'admin';
+
+    if (!enabled || !adminEmergency) {
+      const rejectedCommand = liveCommandFromRequest(request, profile, requestedAt);
+      const reason = enabled ? 'firebase_rejected_admin_required' : 'firebase_rejected_access_disabled';
+      await patchRecord(rejectedCommand, {
+        status: 'failed',
+        doneAt: processedAt,
+        closedAt: processedAt,
+        resultReason: reason,
+        firebaseRejectedAt: processedAt
+      });
+      await writeEvent(rejectedCommand, 'request_rejected', reason, processedAt);
+      await snap.ref.update({
+        status: 'rejected',
+        resultReason: reason,
+        processedAt
+      });
+      return null;
+    }
+
+    const command = liveCommandFromRequest(request, profile, requestedAt);
+    await patchRecord(command, {
+      status: 'pending',
+      resultReason: 'firebase_request_received',
+      firebaseReceivedAt: requestedAt
+    });
+    await writeEvent(command, 'request_received', 'waiting_for_live_slot', requestedAt);
+
+    const liveRef = db.ref('gate/liveCommand');
+    const result = await liveRef.transaction((current) => {
+      if (isExecutableLiveCommand(current, processedAt)) return current;
+      return command;
+    });
+
+    const liveCommand = result.snapshot && result.snapshot.exists() ? result.snapshot.val() : null;
+    const accepted = liveCommand && liveCommand.id === command.id;
+
+    if (!accepted) {
+      await patchRecord(command, {
+        status: 'failed',
+        doneAt: processedAt,
+        closedAt: processedAt,
+        resultReason: 'firebase_live_slot_busy',
+        firebaseRejectedAt: processedAt
+      });
+      await writeEvent(command, 'request_rejected', 'firebase_live_slot_busy', processedAt);
+      await snap.ref.update({
+        status: 'rejected',
+        resultReason: 'firebase_live_slot_busy',
+        processedAt
+      });
+      return null;
+    }
+
+    await patchRecord(command, {
+      status: 'pending',
+      resultReason: 'live_slot_claimed',
+      liveSlotClaimed: true,
+      liveSlotClaimedAt: processedAt,
+      firebaseValidatedAt: processedAt
+    });
+    await writeEvent(command, 'live_slot_claimed', 'waiting_for_esp', processedAt);
+    await snap.ref.update({
+      status: 'accepted',
+      resultReason: 'live_slot_claimed',
+      processedAt
+    });
+    return null;
+  });
 
 exports.onLiveCommandWritten = functions
   .runWith({ maxInstances: 2, timeoutSeconds: 30, memory: '256MB' })

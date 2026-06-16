@@ -14,7 +14,47 @@ https://YOUR_MEDIAMTX_DOMAIN/gate/index.m3u8
 DVR RTSP feed -> Google Compute Engine VM -> MediaMTX -> HLS -> Firebase web app
 ```
 
-## VM Setup
+## Cloud Shell VM Setup
+
+Run this from Google Cloud Shell in the Firebase/Google project account, not from the local PC:
+
+```bash
+git clone https://github.com/homeox/gate-controller.git
+cd gate-controller
+bash camera-relay/create-gce-mediamtx-cloudshell.sh
+```
+
+The script:
+
+- enables the Compute Engine API
+- creates a small Ubuntu VM
+- installs MediaMTX directly with systemd, without Docker
+- pulls the external DVR RTSP substream
+- opens TCP port 8888 for the HLS preview
+- prints the HLS URL to paste into the Firebase web app camera config
+
+Expected output URL:
+
+```text
+http://VM_PUBLIC_IP:8888/gate/index.m3u8
+```
+
+Put that value in:
+
+```text
+gate-cloud/public/camera-config.js
+```
+
+Example:
+
+```js
+window.gateCameraConfig = {
+  hlsUrl: 'http://VM_PUBLIC_IP:8888/gate/index.m3u8',
+  label: 'Gate camera'
+};
+```
+
+## Manual VM Setup
 
 Use a small Ubuntu VM close to Australia/Singapore. Open the HLS port only as needed while testing.
 

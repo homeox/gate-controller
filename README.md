@@ -14,7 +14,7 @@ The important design rule is simple: **there is no executable command queue**. T
 
 ## Current Live System
 
-- Project version: `0.3.0+20260616`
+- Project version: `0.3.1+20260616`
 - Firebase project: `gate-controller-1b092`
 - Hosting: `https://gate-controller-1b092.web.app/`
 - Realtime Database: `gate-controller-1b092-default-rtdb` in `asia-southeast1`
@@ -89,6 +89,20 @@ Command shape:
 ```
 
 `requestedAt` and `requestedAtEsp` must be Firebase/server-received time, not phone/browser time. The app may record `requestedAtClient` for diagnostics only.
+
+The browser is GUI-only for gate commands. It writes a command intent to:
+
+```text
+gate/commandRequests/{id}
+```
+
+The browser must not write `requestedAt`, `requestedAtEsp`, `expiresAt`, `ttlMs`, or `gate/liveCommand`.
+
+Firebase Functions stamps server time, mirrors the audit logs, and publishes the executable command to:
+
+```text
+gate/liveCommand
+```
 
 The ESP:
 
