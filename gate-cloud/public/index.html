@@ -48,15 +48,18 @@
         </div>
       </div>
 
+      <div class="camera-card">
+        <div class="camera-frame">
+          <video id="gateCam" autoplay muted playsinline controls></video>
+          <div id="cameraFallback" class="camera-fallback">Camera feed unavailable.</div>
+        </div>
+        <div class="camera-meta">
+          <span id="cameraStatus" class="camera-status">Camera not configured</span>
+        </div>
+      </div>
+
       <button id="openGateBtn" class="gate-button">GATE</button>
       <p id="gateMessage" class="message">Ready</p>
-
-      <div class="stats-grid">
-        <div class="stat-card"><span>Your uses</span><strong id="userOpenCount">0</strong></div>
-        <div class="stat-card"><span>Your last access</span><strong id="userLastAccess">None yet</strong></div>
-        <div class="stat-card"><span>Last command</span><strong id="lastCommand">None</strong></div>
-        <div class="stat-card"><span>Device seen</span><strong id="deviceSeen">Unknown</strong></div>
-      </div>
 
       <details class="fold settings-fold">
         <summary>Settings</summary>
@@ -77,10 +80,20 @@
         </div>
       </details>
 
-      <div class="box recent-box">
-        <h3>Your Recent Access</h3>
-        <div id="userLogsList" class="timeline"></div>
-      </div>
+      <details class="fold diagnostics-fold">
+        <summary>Activity and diagnostics</summary>
+        <div class="stats-grid">
+          <div class="stat-card"><span>Your uses</span><strong id="userOpenCount">0</strong></div>
+          <div class="stat-card"><span>Your last access</span><strong id="userLastAccess">None yet</strong></div>
+          <div class="stat-card"><span>Last command</span><strong id="lastCommand">None</strong></div>
+          <div class="stat-card"><span>Device seen</span><strong id="deviceSeen">Unknown</strong></div>
+        </div>
+
+        <div class="box recent-box">
+          <h3>Your Recent Access</h3>
+          <div id="userLogsList" class="timeline"></div>
+        </div>
+      </details>
     </section>
 
     <section id="adminView" class="panel hidden">
@@ -211,6 +224,8 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
   <script src="firebase-config.js"></script>
+  <script src="camera-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script src="app.js"></script>
 </body>
 </html>

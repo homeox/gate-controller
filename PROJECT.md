@@ -4,43 +4,51 @@ This workspace contains several projects. For the electric gate controller, use 
 
 ## Workspace
 
-Root:
+Workspace root:
 
 `C:\Users\rkiwi\OneDrive\Documents\New project`
+
+Gate controller repo root:
+
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller`
 
 ## Gate Controller Paths
 
 ESP32 firmware and local diagnostic page:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\esp32-com3`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\esp32-com3`
 
 Main ESP firmware:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\esp32-com3\src\main.cpp`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\esp32-com3\src\main.cpp`
 
 PlatformIO config:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\esp32-com3\platformio.ini`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\esp32-com3\platformio.ini`
 
 Firebase web app, hosting, and database rules:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\gate-cloud`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-cloud`
 
 Firebase web app JS:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\gate-cloud\public\app.js`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-cloud\public\app.js`
 
 Firebase Realtime Database rules:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\gate-cloud\database.rules.json`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-cloud\database.rules.json`
+
+Camera relay setup:
+
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\camera-relay`
 
 Android app wrapper and widget:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\gate-android`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-android`
 
 Android debug APK:
 
-`C:\Users\rkiwi\OneDrive\Documents\New project\gate-android\app\build\outputs\apk\debug\app-debug.apk`
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-android\app\build\outputs\apk\debug\app-debug.apk`
 
 Android toolchain is installed on D drive, not C:
 
@@ -75,6 +83,14 @@ Realtime Database:
 
 `https://gate-controller-1b092-default-rtdb.asia-southeast1.firebasedatabase.app`
 
+Gate camera:
+
+- DVR local RTSP works on channel 7.
+- Browser RTSP is not supported; public web camera preview uses a MediaMTX HLS relay.
+- Relay setup files are in `camera-relay/`.
+- Web HLS URL is configured in `gate-cloud/public/camera-config.js`.
+- Do not put the raw DVR RTSP URL into frontend code.
+
 ## Hardware Map
 
 Gate trigger:
@@ -97,7 +113,7 @@ The ESP is the final authority. The web app and Firebase do not queue commands.
 
 Required command behavior:
 
-- Firebase command slot is `gate/fast`.
+- Firebase command slot is `gate/liveCommand`.
 - There must be no executable command queue.
 - One command equals one immediate action.
 - Commands must include `requestedAt` and `expiresAt`.
@@ -119,7 +135,7 @@ Cloud polling:
 
 - ESP signs in as `gate-device@gate-controller.local`.
 - ESP writes heartbeat to `gate/device`.
-- ESP polls `gate/fast` while idle.
+- ESP polls `gate/liveCommand` while idle.
 - ESP marks accepted commands `active`, then `done` or `failed`.
 
 ## Useful Commands

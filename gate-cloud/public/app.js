@@ -1,7 +1,7 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '0.2.1+20260615';
+const APP_VERSION = '0.3.0+20260616';
 
 const els = {
   statusPill: document.getElementById('statusPill'),
@@ -26,6 +26,9 @@ const els = {
   userSummary: document.getElementById('userSummary'),
   openGateBtn: document.getElementById('openGateBtn'),
   gateMessage: document.getElementById('gateMessage'),
+  gateCam: document.getElementById('gateCam'),
+  cameraFallback: document.getElementById('cameraFallback'),
+  cameraStatus: document.getElementById('cameraStatus'),
   lastCommand: document.getElementById('lastCommand'),
   deviceSeen: document.getElementById('deviceSeen'),
   userOpenCount: document.getElementById('userOpenCount'),
@@ -83,6 +86,8 @@ let latestLiveCommand = null;
 let latestDevice = {};
 let latestState = {};
 let latestDesiredConfig = {};
+let cameraStarted = false;
+let cameraHls = null;
 const LOOK_KEY = 'gateLook';
 const GATE_COMMAND_TTL_MS = 3000;
 const GATE_FEEDBACK_HOLD_MS = 2600;
@@ -119,6 +124,74 @@ function setOnline(online, label) {
   els.statusPill.textContent = label || (online ? 'Online' : 'Offline');
   els.statusPill.classList.toggle('online', online);
   els.statusPill.classList.toggle('offline', !online);
+}
+
+function setCameraState(state, message) {
+  if (!els.cameraStatus || !els.cameraFallback) return;
+  els.cameraStatus.textContent = message;
+  els.cameraStatus.dataset.state = state;
+  els.cameraFallback.classList.toggle('hidden', state === 'playing');
+}
+
+function initCameraPreview() {
+  if (cameraStarted || !els.gateCam) return;
+  cameraStarted = true;
+
+  const cameraConfig = window.gateCameraConfig || {};
+  const hlsUrl = String(cameraConfig.hlsUrl || '').trim();
+
+  if (!hlsUrl) {
+    setCameraState('missing', 'Camera relay not configured');
+    return;
+  }
+
+  const video = els.gateCam;
+  const markUnavailable = () => setCameraState('failed', 'Camera feed unavailable');
+
+  video.muted = true;
+  video.playsInline = true;
+  video.addEventListener('playing', () => setCameraState('playing', 'Camera live'), { once: true });
+  video.addEventListener('error', markUnavailable);
+
+  if (window.Hls && window.Hls.isSupported()) {
+    cameraHls = new window.Hls({
+      lowLatencyMode: true,
+      backBufferLength: 20
+    });
+    cameraHls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (data && data.fatal) {
+        cameraHls.destroy();
+        cameraHls = null;
+        markUnavailable();
+      }
+    });
+    cameraHls.loadSource(hlsUrl);
+    cameraHls.attachMedia(video);
+    setCameraState('loading', 'Camera loading');
+    return;
+  }
+
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = hlsUrl;
+    setCameraState('loading', 'Camera loading');
+    return;
+  }
+
+  setCameraState('unsupported', 'Camera feed unsupported by this browser');
+}
+
+function stopCameraPreview() {
+  if (cameraHls) {
+    cameraHls.destroy();
+    cameraHls = null;
+  }
+  if (els.gateCam) {
+    els.gateCam.pause();
+    els.gateCam.removeAttribute('src');
+    els.gateCam.load();
+  }
+  cameraStarted = false;
+  setCameraState('missing', 'Camera not configured');
 }
 
 function fmtTime(value) {
@@ -1058,6 +1131,7 @@ auth.onAuthStateChanged(async (user) => {
   currentProfile = null;
 
   if (!user) {
+    stopCameraPreview();
     setOnline(false);
     show(els.loginView, !inviteCode);
     show(els.inviteView, Boolean(inviteCode));
@@ -1069,6 +1143,7 @@ auth.onAuthStateChanged(async (user) => {
 
   currentProfile = await loadProfile(user);
   if (inviteCode && (!currentProfile.enabled || currentProfile.role === 'none')) {
+    stopCameraPreview();
     setOnline(true);
     show(els.loginView, false);
     show(els.inviteView, true);
@@ -1099,6 +1174,7 @@ auth.onAuthStateChanged(async (user) => {
   }
   els.openGateBtn.disabled = !canUseGate(currentProfile);
 
+  initCameraPreview();
   watchGate();
   watchUserLogs();
   await loadAdmin();

@@ -8,19 +8,43 @@ The important design rule is simple: **there is no executable command queue**. T
 
 - `esp32-com3/` - ESP32 firmware, local diagnostic page, backup AP, OTA, Firebase polling.
 - `gate-cloud/` - Firebase Hosting web app, Realtime Database rules, and Cloud Functions.
+- `camera-relay/` - no-Docker MediaMTX relay notes and config for the gate camera RTSP-to-HLS bridge.
 - `gate-android/` - Android one-tap gate app used for sideload testing.
 - `PROJECT.md` - working handoff notes with live paths, hardware map, commands, and safety rules.
 
 ## Current Live System
 
-- Project version: `0.2.1+20260615`
+- Project version: `0.3.0+20260616`
 - Firebase project: `gate-controller-1b092`
 - Hosting: `https://gate-controller-1b092.web.app/`
 - Realtime Database: `gate-controller-1b092-default-rtdb` in `asia-southeast1`
 - ESP local page: usually `http://192.168.0.228/` or the static lease address in the router.
 - ESP backup AP: SSID `GateController`, page `http://192.168.4.1/`
+- Gate camera relay: MediaMTX HLS URL is configured in `gate-cloud/public/camera-config.js` after the VM exists.
 
 Do not commit real Wi-Fi passwords, Firebase device passwords, or household login credentials. This repo uses examples for those.
+
+## Gate Camera Preview
+
+Browsers cannot play the DVR RTSP feed directly, so the public web app expects a browser-safe HLS feed from MediaMTX:
+
+```text
+DVR RTSP -> MediaMTX VM -> HLS -> Firebase web app
+```
+
+The frontend camera config lives in:
+
+```text
+gate-cloud/public/camera-config.js
+```
+
+Set `hlsUrl` to the MediaMTX URL once the relay VM is running:
+
+```text
+https://YOUR_MEDIAMTX_DOMAIN/gate/index.m3u8
+```
+
+Do not put the raw RTSP URL into the web app.
 
 ## Hardware Map
 

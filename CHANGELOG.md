@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.3.0+20260616] - 2026-06-16
+
+### Added
+
+- Added a Firebase web camera preview panel that loads an HLS relay with hls.js.
+- Added `camera-config.js` so the browser only sees the MediaMTX HLS URL, not the raw DVR RTSP URL.
+- Added no-Docker MediaMTX relay setup files for a Google Compute Engine VM.
+
+### Changed
+
+- Moved user-facing access stats and logs behind an `Activity and diagnostics` fold so the main gate page is cleaner.
+
 ## [0.2.1+20260615] - 2026-06-15
 
 ### Fixed

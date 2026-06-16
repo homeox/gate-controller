@@ -1,0 +1,15 @@
+logLevel: info
+
+hls: true
+hlsAddress: :8888
+hlsAllowOrigins: ["*"]
+hlsVariant: lowLatency
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]
+
+paths:
+  gate:
+    source: rtsp://REPLACE_WITH_EXTERNAL_DVR_RTSP_URL
+    sourceOnDemand: true
