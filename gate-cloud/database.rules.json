@@ -70,7 +70,7 @@
         "desired": {
           ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'device')",
           ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
-          ".validate": "newData.hasChildren(['pulseMs', 'emergencyPulseMs', 'heartbeatIdleMs', 'pollMs', 'commandTimeoutMs', 'revision', 'updatedAt', 'updatedBy']) && newData.child('pulseMs').isNumber() && newData.child('emergencyPulseMs').isNumber() && newData.child('heartbeatIdleMs').isNumber() && newData.child('pollMs').isNumber() && newData.child('commandTimeoutMs').isNumber() && newData.child('commandTimeoutMs').val() <= 3000"
+          ".validate": "newData.hasChildren(['pulseMs', 'emergencyPulseMs', 'heartbeatIdleMs', 'pollMs', 'revision', 'updatedAt', 'updatedBy']) && newData.child('pulseMs').isNumber() && newData.child('emergencyPulseMs').isNumber() && newData.child('heartbeatIdleMs').isNumber() && newData.child('pollMs').isNumber()"
         },
         "reported": {
           ".read": "auth != null && root.child('users').child(auth.uid).child('enabled').val() === true",

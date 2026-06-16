@@ -7,7 +7,8 @@ const db = admin.database();
 const COMMAND_TIMEOUT_MS = 3000;
 const LIVE_SLOT_RETIRE_MS = 10000;
 const INSTANCE = 'gate-controller-1b092-default-rtdb';
-const FUNCTION_VERSION = '0.3.1+20260616';
+const FUNCTION_VERSION = '0.3.4+20260616';
+const CAMERA_HLS_BASE = 'http://34.151.126.55:8888/gate/';
 
 function now() {
   return Date.now();
@@ -73,7 +74,7 @@ function commandRecordPatch(command, patch) {
   };
 }
 
-function liveCommandFromRequest(request, profile, requestedAt) {
+function liveCommandFromRequest(request, profile, requestedAt, firebaseReceivedAt = requestedAt) {
   const ttlMs = commandTtl(request);
   const accessGroup = profile.accessGroup || 'guest';
   return {
@@ -96,7 +97,8 @@ function liveCommandFromRequest(request, profile, requestedAt) {
     espRssiAtRequest: Number(request.espRssiAtRequest || 0),
     durationMs: Number(request.durationMs || 0),
     source: 'web',
-    firebaseReceivedAt: requestedAt,
+    firebaseReceivedAt,
+    firebasePublishedAt: requestedAt,
     cloudFunctionVersion: FUNCTION_VERSION
   };
 }
@@ -109,7 +111,9 @@ function isExecutableLiveCommand(command, at = now()) {
 }
 
 function statusRank(status) {
-  if (status === 'done' || status === 'failed' || status === 'expired') return 3;
+  if (status === 'done') return 5;
+  if (status === 'failed') return 4;
+  if (status === 'expired') return 3;
   if (status === 'active') return 2;
   if (status === 'pending') return 1;
   return 0;
@@ -254,11 +258,12 @@ exports.onCommandRequestCreated = functions
       return null;
     }
 
-    const command = liveCommandFromRequest(request, profile, requestedAt);
+    const command = liveCommandFromRequest(request, profile, processedAt, requestedAt);
     await patchRecord(command, {
       status: 'pending',
       resultReason: 'firebase_request_received',
-      firebaseReceivedAt: requestedAt
+      firebaseReceivedAt: requestedAt,
+      firebasePublishedAt: processedAt
     });
     await writeEvent(command, 'request_received', 'waiting_for_live_slot', requestedAt);
 
@@ -370,9 +375,7 @@ exports.onLiveCommandWritten = functions
         expiresAt: latestExpiresAt
       });
       await writeEvent(latestCommand, 'validated', 'waiting_for_esp', at);
-      await new Promise((resolve) => setTimeout(resolve, COMMAND_TIMEOUT_MS + 500));
-      await expireIfStillPending(latestCommand.id, 'firebase_expired_unclaimed');
-      await new Promise((resolve) => setTimeout(resolve, LIVE_SLOT_RETIRE_MS - COMMAND_TIMEOUT_MS));
+      await new Promise((resolve) => setTimeout(resolve, LIVE_SLOT_RETIRE_MS));
       await retireOldLiveSlot();
       return null;
     }
@@ -407,4 +410,55 @@ exports.watchdogLiveCommand = functions
     await expireIfStillPending('', 'firebase_watchdog_expired');
     await retireOldLiveSlot();
     return null;
+  });
+
+exports.cameraHlsProxy = functions
+  .runWith({ maxInstances: 10, timeoutSeconds: 30, memory: '256MB' })
+  .region('asia-southeast1')
+  .https.onRequest(async (req, res) => {
+    try {
+      res.set('Access-Control-Allow-Origin', '*');
+      res.set('Cache-Control', 'no-store, max-age=0');
+
+      if (req.method === 'OPTIONS') {
+        res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.set('Access-Control-Allow-Headers', 'Content-Type, Range');
+        res.status(204).send('');
+        return;
+      }
+
+      const rawPath = String(req.path || '').replace(/^\/+/, '');
+      const hlsPath = rawPath.replace(/^camera\/?/, '') || 'index.m3u8';
+      const target = new URL(hlsPath, CAMERA_HLS_BASE);
+      const upstream = await fetch(target.toString(), {
+        headers: req.headers.range ? { Range: req.headers.range } : {}
+      });
+
+      if (!upstream.ok && upstream.status !== 206) {
+        res.status(upstream.status).send(`Camera feed unavailable (${upstream.status})`);
+        return;
+      }
+
+      const contentType = upstream.headers.get('content-type') || '';
+      if (contentType) res.set('Content-Type', contentType);
+      if (upstream.headers.get('content-range')) res.set('Content-Range', upstream.headers.get('content-range'));
+      if (upstream.headers.get('accept-ranges')) res.set('Accept-Ranges', upstream.headers.get('accept-ranges'));
+
+      if (hlsPath.endsWith('.m3u8')) {
+        const text = await upstream.text();
+        const rewritten = text.split('\n').map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#') || /^https?:\/\//i.test(trimmed)) return line;
+          return `/camera/${trimmed}`;
+        }).join('\n');
+        res.status(upstream.status).send(rewritten);
+        return;
+      }
+
+      const body = Buffer.from(await upstream.arrayBuffer());
+      res.status(upstream.status).send(body);
+    } catch (error) {
+      console.error('Camera proxy failed', error);
+      res.status(502).send('Camera feed unavailable.');
+    }
   });

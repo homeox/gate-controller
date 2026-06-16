@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.3.4+20260616] - 2026-06-16
+
+### Fixed
+
+- Kept Firebase as the command time authority while starting the executable ESP expiry window when Firebase publishes `gate/liveCommand`, so backend trigger delay cannot consume the ESP pickup window.
+- Routed the camera preview through the Firebase HTTPS origin at `/camera/index.m3u8` to avoid browser mixed-content blocking.
+- Removed the web/admin command-timeout tuning control so command freshness is not authored or tuned by the browser.
+- Stopped the Firebase validation function from racing the ESP with an early `expired_unclaimed` write while the ESP may still be reporting `active` or `done`.
+
 ## [0.3.3+20260616] - 2026-06-16
 
 ### Changed

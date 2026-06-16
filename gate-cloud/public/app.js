@@ -1,7 +1,7 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '0.3.3+20260616';
+const APP_VERSION = '0.3.4+20260616';
 
 // Gate command boundary:
 // This web app is a GUI only. It never authors command time, expiry, TTL, or
@@ -55,7 +55,6 @@ const els = {
   configEmergencyPulseMs: document.getElementById('configEmergencyPulseMs'),
   configHeartbeatIdleMs: document.getElementById('configHeartbeatIdleMs'),
   configPollMs: document.getElementById('configPollMs'),
-  configCommandTimeoutMs: document.getElementById('configCommandTimeoutMs'),
   saveConfigBtn: document.getElementById('saveConfigBtn'),
   configStatus: document.getElementById('configStatus'),
   reportedConfigSummary: document.getElementById('reportedConfigSummary'),
@@ -739,7 +738,6 @@ function fillConfigForm(desired, reported) {
   els.configEmergencyPulseMs.value = desired.emergencyPulseMs || reported.emergencyPulseMs || 10000;
   els.configHeartbeatIdleMs.value = desired.heartbeatIdleMs || reported.heartbeatIdleMs || 10000;
   els.configPollMs.value = desired.pollMs || reported.pollMs || 500;
-  els.configCommandTimeoutMs.value = desired.commandTimeoutMs || reported.commandTimeoutMs || 3000;
   els.reportedConfigSummary.textContent = `ESP reports pulse ${reported.pulseMs || '-'} ms, idle heartbeat ${reported.heartbeatIdleMs || '-'} ms, poll ${reported.pollMs || '-'} ms, revision ${reported.revision || 'default'}.`;
 }
 
@@ -752,7 +750,6 @@ async function saveGateConfig() {
     emergencyPulseMs: Number(els.configEmergencyPulseMs.value || 10000),
     heartbeatIdleMs: Number(els.configHeartbeatIdleMs.value || 10000),
     pollMs: Number(els.configPollMs.value || 500),
-    commandTimeoutMs: Math.min(3000, Number(els.configCommandTimeoutMs.value || 3000)),
     revision: nextRevision,
     updatedAt: now,
     updatedBy: currentUser.uid,

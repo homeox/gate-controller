@@ -52,6 +52,15 @@
           }
         ]
       }
+    ],
+    "rewrites": [
+      {
+        "source": "/camera/**",
+        "function": {
+          "functionId": "cameraHlsProxy",
+          "region": "asia-southeast1"
+        }
+      }
     ]
   },
   "database": {
