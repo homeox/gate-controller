@@ -1,6 +1,5 @@
 # Secrets and local credentials
 esp32-com3/src/secrets.h
-gate-cloud/public/firebase-config.js
 gate-cloud/.firebaserc
 gate-android/local.properties
 
