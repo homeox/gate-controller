@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.3.3+20260616] - 2026-06-16
+
+### Changed
+
+- Pointed the Firebase web camera preview at the live MediaMTX HLS relay.
+
 ## [0.3.2+20260616] - 2026-06-16
 
 ### Fixed

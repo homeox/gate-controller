@@ -1,7 +1,7 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '0.3.2+20260616';
+const APP_VERSION = '0.3.3+20260616';
 
 // Gate command boundary:
 // This web app is a GUI only. It never authors command time, expiry, TTL, or
