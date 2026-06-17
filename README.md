@@ -2,7 +2,7 @@
 
 ESP32 + Firebase + Android gate controller for a TOPENS-style sliding gate controller.
 
-The important design rule is simple: **there is no executable command queue**. The cloud holds one live command slot, and the ESP32 is the authority. If the ESP is idle and sees a fresh command, it pulses the gate. If it is already pulsing, the command is discarded. Old commands are expired, never replayed later.
+The important design rule is simple: **there is no executable command queue**. Firebase holds one live command slot, and the ESP32 is the physical actuator authority. If the ESP is idle and sees a Firebase-published pending command, it pulses the gate. If it is already pulsing, the command is discarded. Old commands are expired by Firebase cleanup, never replayed later.
 
 ## Repository Layout
 
@@ -11,15 +11,16 @@ The important design rule is simple: **there is no executable command queue**. T
 - `camera-relay/` - no-Docker MediaMTX relay notes and config for the gate camera RTSP-to-HLS bridge.
 - `gate-android/` - Android one-tap gate app used for sideload testing.
 - `PROJECT.md` - working handoff notes with live paths, hardware map, commands, and safety rules.
+- `SAFETY_INVARIANTS.md` - non-negotiable command authority and no-queue rules.
 
 ## Current Live System
 
-- Project version: `0.3.1+20260616`
+- Project version: `0.3.7+20260617`
 - Firebase project: `gate-controller-1b092`
 - Hosting: `https://gate-controller-1b092.web.app/`
 - Realtime Database: `gate-controller-1b092-default-rtdb` in `asia-southeast1`
 - ESP local page: usually `http://192.168.0.228/` or the static lease address in the router.
-- ESP backup AP: SSID `GateController`, page `http://192.168.4.1/`
+- ESP backup AP: SSID `GateController`, page `http://192.168.4.1/`. This AP is intentionally kept on while house Wi-Fi is connected so local recovery remains available.
 - Gate camera relay: MediaMTX HLS URL is configured in `gate-cloud/public/camera-config.js` after the VM exists.
 
 Do not commit real Wi-Fi passwords, Firebase device passwords, or household login credentials. This repo uses examples for those.
@@ -108,12 +109,16 @@ The ESP:
 
 1. Polls `gate/liveCommand` while idle.
 2. Accepts only `status: "pending"`.
-3. Rejects stale timestamps.
+3. Rejects malformed commands.
 4. Rejects commands created during the previous pulse.
 5. Rejects while the relay/optocoupler is active.
 6. Marks accepted commands `active`, then `done` or `failed`.
 
+The ESP must not reject Firebase-published commands based only on local clock age. Firebase owns cloud command timing and expiry.
+
 Spam clicking is allowed at the UI level. The ESP and cloud cleanup must cull spam rather than queue it.
+
+Firebase/cloud failures must not reboot the ESP or remove local controls. The local web server and backup AP are the survival layer.
 
 ## Firebase
 
@@ -141,6 +146,10 @@ npx firebase-tools database:get /gate/liveCommand --project gate-controller-1b09
 ## ESP32 Firmware
 
 Create `esp32-com3/src/secrets.h` from `secrets.example.h`.
+
+Do not delete `secrets.h` after a real build/flash. It is ignored by git because
+it contains live Wi-Fi/Firebase credentials, but it must remain on the workstation
+for OTA/USB firmware work.
 
 Build:
 
@@ -204,12 +213,9 @@ gradle assembleDebug
 
 ## Recent Critical Fix
 
-The app timestamp regression was fixed on 2026-06-14:
+The command authority regression was fixed on 2026-06-17:
 
-- Web and Android stopped rounding `requestedAtEsp` down to the nearest second.
-- Web now writes Firebase server timestamps for `requestedAt`/`requestedAtEsp`.
-- Firebase Functions derive expiry from server-received time plus `ttlMs`.
-- ESP firmware derives expiry from `requestedAt + ttlMs`.
-- Old stale `pending` audit rows were closed as `expired`; `gate/liveCommand` was confirmed `null`.
-
-This fix matters because the previous rounded timestamp could make a fresh command look up to 999ms older than it really was.
+- Web and Android must not author executable timing fields.
+- Firebase Functions derive command timing from server-side processing and publish the single live slot.
+- ESP firmware no longer rejects Firebase-published commands based only on local clock age.
+- Old pending telemetry remains audit history only; `gate/liveCommand` is the only executable command slot.

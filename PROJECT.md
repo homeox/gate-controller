@@ -26,6 +26,12 @@ PlatformIO config:
 
 `C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\esp32-com3\platformio.ini`
 
+Local ESP credentials file:
+
+`C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\esp32-com3\src\secrets.h`
+
+This file is intentionally gitignored because it contains live credentials. Do not delete it after flashing; future ESP builds need it.
+
 Firebase web app, hosting, and database rules:
 
 `C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-cloud`
@@ -42,7 +48,7 @@ Camera relay setup:
 
 `C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\camera-relay`
 
-Android app wrapper and widget:
+Android one-tap app:
 
 `C:\Users\rkiwi\OneDrive\Documents\New project\gate-controller\gate-android`
 
@@ -120,8 +126,8 @@ Required command behavior:
 - There must be no executable command queue.
 - One command equals one immediate action.
 - Commands must include `requestedAt` and `expiresAt`.
-- Web commands expire after about `2000 ms`.
-- ESP rejects stale commands.
+- Firebase expires unclaimed commands and writes clear telemetry.
+- ESP does not reject Firebase-published commands based only on local timestamp age.
 - ESP rejects commands created during the previous pulse.
 - ESP does not poll cloud commands while the pulse output is active.
 - Anything sent during an active pulse must be discarded, not stored for later.
@@ -133,6 +139,8 @@ Required command behavior:
 The ESP firmware keeps the local page and backup AP in place, and adds Firebase polling as a second layer.
 
 Local direct controls must not be removed while working on cloud control.
+
+The `GateController` backup AP is intentionally always on, even while house Wi-Fi is connected. Firebase failures must not reboot the ESP or take down the local page.
 
 Cloud polling:
 

@@ -1,12 +1,14 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '0.3.5+20260616';
+const APP_VERSION = '0.3.7+20260617';
 
 // Gate command boundary:
 // This web app is a GUI only. It never authors command time, expiry, TTL, or
 // executable gate state. It writes a user intent to gate/commandRequests/{id};
 // Firebase Functions stamps server time and publishes gate/liveCommand for ESP.
+// It must not decide command freshness or expose backend rejection details on
+// the family-facing control surface.
 
 const els = {
   statusPill: document.getElementById('statusPill'),
@@ -82,7 +84,6 @@ const els = {
 
 let currentUser = null;
 let currentProfile = null;
-let pendingCommandId = '';
 let sessionId = localStorage.getItem('gateSessionId') || '';
 let latestLiveCommand = null;
 let latestDevice = {};
@@ -288,6 +289,7 @@ function renderGateState() {
   const now = Date.now();
   const accessOk = canUseGate(currentProfile);
   const health = deviceHealth(now);
+  const liveStatus = latestLiveCommand && latestLiveCommand.status ? latestLiveCommand.status : '';
 
   setOnline(accessOk, accessOk ? 'Gate ready' : 'Access disabled');
   if (health.seen) {
@@ -301,18 +303,27 @@ function renderGateState() {
     els.deviceSeen.textContent = 'No heartbeat reported';
   }
 
-  els.openGateBtn.classList.remove('idle', 'ready', 'lost');
+  els.openGateBtn.classList.remove('sent', 'processing', 'accepted', 'rejected', 'idle', 'ready', 'lost');
   if (!accessOk) {
     els.openGateBtn.classList.add('lost');
+  } else if (ACTIVE_COMMAND_STATUSES.has(liveStatus)) {
+    els.openGateBtn.classList.add('sent');
   } else {
     els.openGateBtn.classList.add('ready');
   }
-  if (!pendingCommandId) {
-    if (!accessOk) {
-      els.gateMessage.textContent = 'Access disabled or expired';
-    } else {
-      els.gateMessage.textContent = 'Ready';
-    }
+
+  if (!accessOk) {
+    els.gateMessage.textContent = 'Access disabled or expired';
+  } else if (liveStatus === 'active') {
+    els.gateMessage.textContent = 'Gate active';
+  } else if (liveStatus === 'pending') {
+    els.gateMessage.textContent = 'Sent';
+  } else if (liveStatus === 'done') {
+    els.gateMessage.textContent = 'Gate complete';
+  } else if (liveStatus === 'failed' || liveStatus === 'expired') {
+    els.gateMessage.textContent = 'Gate unavailable';
+  } else {
+    els.gateMessage.textContent = 'Ready';
   }
   els.openGateBtn.disabled = !accessOk;
 }
@@ -600,25 +611,8 @@ function buildEmergencyCommandRequest(id) {
   };
 }
 
-function watchSubmittedCommand(id) {
-  const ref = db.ref(`gate/commandRequests/${id}`);
-  ref.on('value', (snap) => {
-    const request = snap.val();
-    if (!request || pendingCommandId !== id) return;
-
-    if (request.status === 'accepted') {
-      setGateFeedback('processing', 'Waiting for ESP state');
-    } else if (request.status === 'rejected') {
-      pendingCommandId = '';
-      ref.off();
-      setGateFeedback('rejected', request.resultReason || 'Gate request rejected');
-    }
-  });
-}
-
 async function sendGateCommandRequest(command) {
   await db.ref(`gate/commandRequests/${command.id}`).set(command);
-  watchSubmittedCommand(command.id);
 }
 
 function setGateButtonActive(active) {
@@ -634,18 +628,13 @@ function sendGatePulse(event) {
   }
   const id = makeCommandId();
   const command = buildGateCommandRequest(id, 'pulse');
-  pendingCommandId = id;
   setGateButtonActive(true);
-  setGateFeedback('sent', 'Gate request sent');
+  setGateFeedback('sent', 'Sent');
   sendGateCommandRequest(command).then(() => {
-    if (pendingCommandId === id) {
-      setGateFeedback('processing', 'Waiting for Firebase/ESP state');
-    }
+    setGateFeedback('sent', 'Sent');
   }).catch((error) => {
-    if (pendingCommandId === id) {
-      pendingCommandId = '';
-    }
-    setGateFeedback('rejected', error.message);
+    console.warn('[gate] command request send failed', error);
+    setGateFeedback('rejected', 'Gate unavailable');
     setGateButtonActive(false);
   });
 }
@@ -657,6 +646,7 @@ function watchGate() {
     if (!command) {
       els.lastCommand.textContent = 'None';
       renderGateState();
+      setGateButtonActive(false);
       if (els.emergencyStatus) {
         els.emergencyStatus.textContent = 'Ready. Sends one 10 second pulse. ESP handles any rapid repeats safely.';
       }
@@ -665,16 +655,14 @@ function watchGate() {
     els.lastCommand.textContent = `${command.status || 'unknown'} by ${command.requestedByName || 'unknown'} at ${fmtTime(command.requestedAt)}`;
     renderGateState();
 
-    if (pendingCommandId === command.id && command.status === 'active') {
-      setGateFeedback('accepted', 'Gate command ingested');
-    } else if (pendingCommandId === command.id && command.status === 'done') {
-      pendingCommandId = '';
-      setGateFeedback('accepted', 'Gate command completed');
-    } else if (pendingCommandId === command.id && (command.status === 'failed' || command.status === 'expired')) {
-      pendingCommandId = '';
-      setGateFeedback('rejected', command.resultReason || 'Gate command rejected');
-    } else if (!pendingCommandId && command.status === 'failed') {
-      setGateFeedback('rejected', 'Last command failed');
+    if (command.status === 'active') {
+      setGateFeedback('accepted', 'Gate active');
+    } else if (command.status === 'pending') {
+      setGateFeedback('sent', 'Sent');
+    } else if (command.status === 'done') {
+      setGateFeedback('accepted', 'Gate complete');
+    } else if (command.status === 'failed' || command.status === 'expired') {
+      setGateFeedback('rejected', 'Gate unavailable');
     }
     if (els.emergencyStatus && command.type === 'emergencyPulse') {
       els.emergencyStatus.textContent = command.status === 'done'
@@ -1025,7 +1013,7 @@ async function sendEmergencyPulse() {
   const id = makeCommandId();
   const command = buildEmergencyCommandRequest(id);
 
-  els.emergencyStatus.textContent = 'Emergency pulse sent. Waiting for ESP release.';
+  els.emergencyStatus.textContent = 'Emergency pulse sent.';
 
   try {
     await sendGateCommandRequest(command);

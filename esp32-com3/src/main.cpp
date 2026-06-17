@@ -24,23 +24,19 @@ constexpr unsigned long DEFAULT_PULSE_MS = 1600;
 constexpr unsigned long MIN_PULSE_MS = 100;
 constexpr unsigned long MAX_PULSE_MS = 5000;
 constexpr unsigned long MAX_CLOUD_PULSE_MS = 10000;
-constexpr unsigned long DEFAULT_SMART_TIMEOUT_MS = 3000;
-constexpr unsigned long MIN_SMART_TIMEOUT_MS = 100;
-constexpr unsigned long MAX_SMART_TIMEOUT_MS = 10000;
 constexpr unsigned long DEFAULT_CLOUD_POLL_MS = 300;
 constexpr unsigned long DEFAULT_CLOUD_HEARTBEAT_IDLE_MS = 10000;
 constexpr unsigned long CLOUD_CONFIG_POLL_MS = 5000;
+constexpr unsigned long FIREBASE_HTTP_TIMEOUT_MS = 1200;
 constexpr unsigned long FIREBASE_TOKEN_REFRESH_MS = 3300000;
 constexpr unsigned long FIREBASE_AUTH_RECOVERY_MS = 45000;
 constexpr unsigned long FIREBASE_WIFI_RECOVERY_MS = 120000;
-constexpr unsigned long FIREBASE_REBOOT_RECOVERY_MS = 300000;
 constexpr unsigned long FIREBASE_RECOVERY_COOLDOWN_MS = 30000;
-constexpr uint64_t DEFAULT_CLOUD_COMMAND_MAX_AGE_MS = 3000;
 
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
 const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
-const char *FIRMWARE_VERSION = "0.2.1+20260615";
+const char *FIRMWARE_VERSION = "0.2.2+20260617";
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -50,7 +46,6 @@ bool mdnsStarted = false;
 bool otaStarted = false;
 bool apStarted = false;
 bool dnsStarted = false;
-bool smartPulseActive = false;
 bool timeStarted = false;
 bool cloudCommandActive = false;
 
@@ -65,17 +60,9 @@ unsigned long wifiConnectedSinceMs = 0;
 unsigned long firebaseTokenMs = 0;
 unsigned long pulseMs = DEFAULT_PULSE_MS;
 unsigned long activePulseMs = DEFAULT_PULSE_MS;
-unsigned long smartTimeoutMs = DEFAULT_SMART_TIMEOUT_MS;
 unsigned long cloudPollMs = DEFAULT_CLOUD_POLL_MS;
 unsigned long cloudHeartbeatIdleMs = DEFAULT_CLOUD_HEARTBEAT_IDLE_MS;
-uint64_t cloudCommandMaxAgeMs = DEFAULT_CLOUD_COMMAND_MAX_AGE_MS;
 uint64_t lastGateReleasedEpochMs = 0;
-int smartCloseTrigger = 800;
-int smartOpenTrigger = 800;
-int smartCloseMin = 4095;
-int smartCloseMax = 0;
-int smartOpenMin = 4095;
-int smartOpenMax = 0;
 String firebaseIdToken;
 String cloudCommandId;
 String cloudCommandRequestedBy;
@@ -90,7 +77,6 @@ uint32_t firebaseRequestFailureCount = 0;
 uint32_t firebaseConsecutiveFailureCount = 0;
 uint32_t firebaseAuthRecoveryCount = 0;
 uint32_t firebaseWifiRecoveryCount = 0;
-uint32_t firebaseRebootRecoveryCount = 0;
 uint64_t lastCommandPollAt = 0;
 uint64_t lastCommandPollOkAt = 0;
 String lastFirebasePath;
@@ -100,13 +86,13 @@ String lastFirebaseFailureMethod;
 String lastCloudRecoveryReason;
 
 uint64_t nowEpochMs();
+void startBackupAp();
 
 void gateSignalOff() {
   const bool wasActive = gateSignalActive;
   digitalWrite(GATE_SIGNAL_PIN, LOW);
   digitalWrite(STATUS_LED_PIN, LOW);
   gateSignalActive = false;
-  smartPulseActive = false;
   if (wasActive) {
     lastGateReleasedEpochMs = nowEpochMs();
   }
@@ -124,26 +110,9 @@ void startGatePulse() {
     return;
   }
 
-  smartPulseActive = false;
   activePulseMs = pulseMs;
   gateSignalOn();
   Serial.println("gate_signal=on");
-}
-
-void startSmartGatePulse() {
-  if (gateSignalActive) {
-    return;
-  }
-
-  const int closeRaw = analogRead(CLOSE_DETECTOR_PIN);
-  const int openRaw = analogRead(OPEN_DETECTOR_PIN);
-  smartCloseMin = closeRaw;
-  smartCloseMax = closeRaw;
-  smartOpenMin = openRaw;
-  smartOpenMax = openRaw;
-  smartPulseActive = true;
-  gateSignalOn();
-  Serial.println("smart_gate_signal=on");
 }
 
 bool cloudEnabled() {
@@ -191,7 +160,7 @@ bool firebaseSignIn() {
     return false;
   }
 
-  http.setTimeout(5000);
+  http.setTimeout(FIREBASE_HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
 
   JsonDocument request;
@@ -260,7 +229,7 @@ int firebaseRequest(const char *method, const char *path, const String &body, St
     return -1;
   }
 
-  http.setTimeout(5000);
+  http.setTimeout(FIREBASE_HTTP_TIMEOUT_MS);
   if (body.length() > 0 || strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0) {
     http.addHeader("Content-Type", "application/json");
   }
@@ -334,7 +303,8 @@ void forceWifiReconnect(const char *reason) {
 
   WiFi.disconnect(false, false);
   delay(100);
-  WiFi.mode(WIFI_STA);
+  startBackupAp();
+  WiFi.mode(WIFI_AP_STA);
   WiFi.persistent(false);
   WiFi.setHostname(HOSTNAME);
   WiFi.setSleep(false);
@@ -359,14 +329,6 @@ void cloudRecoveryWatchdog(unsigned long now) {
   const unsigned long staleMs = now - lastGoodMs;
   if (staleMs < FIREBASE_AUTH_RECOVERY_MS || now - lastCloudRecoveryMs < FIREBASE_RECOVERY_COOLDOWN_MS) {
     return;
-  }
-
-  if (staleMs >= FIREBASE_REBOOT_RECOVERY_MS) {
-    firebaseRebootRecoveryCount++;
-    lastCloudRecoveryReason = "firebase_stale_reboot";
-    Serial.println("firebase_stale_reboot");
-    delay(100);
-    ESP.restart();
   }
 
   if (staleMs >= FIREBASE_WIFI_RECOVERY_MS) {
@@ -456,7 +418,6 @@ void publishCloudState(const char *reason) {
   doc["firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
   doc["firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
   doc["firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
-  doc["firebaseRebootRecoveryCount"] = firebaseRebootRecoveryCount;
   doc["lastCloudRecoveryReason"] = lastCloudRecoveryReason;
   doc["lastFirebaseMethod"] = lastFirebaseMethod;
   doc["lastFirebasePath"] = lastFirebasePath;
@@ -514,7 +475,6 @@ void updateCloudHeartbeat() {
   doc["firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
   doc["firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
   doc["firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
-  doc["firebaseRebootRecoveryCount"] = firebaseRebootRecoveryCount;
   doc["lastCloudRecoveryReason"] = lastCloudRecoveryReason;
   doc["lastFirebaseMethod"] = lastFirebaseMethod;
   doc["lastFirebasePath"] = lastFirebasePath;
@@ -524,7 +484,6 @@ void updateCloudHeartbeat() {
   doc["pulseMs"] = pulseMs;
   doc["heartbeatIdleMs"] = cloudHeartbeatIdleMs;
   doc["pollMs"] = cloudPollMs;
-  doc["commandTimeoutMs"] = cloudCommandMaxAgeMs;
   doc["rssi"] = WiFi.RSSI();
 
   String body;
@@ -549,8 +508,6 @@ void pollCloudConfig() {
   pulseMs = static_cast<unsigned long>(constrain(desired["pulseMs"] | DEFAULT_PULSE_MS, MIN_PULSE_MS, MAX_PULSE_MS));
   cloudHeartbeatIdleMs = static_cast<unsigned long>(constrain(desired["heartbeatIdleMs"] | DEFAULT_CLOUD_HEARTBEAT_IDLE_MS, 2000UL, 60000UL));
   cloudPollMs = static_cast<unsigned long>(constrain(desired["pollMs"] | DEFAULT_CLOUD_POLL_MS, 100UL, 5000UL));
-  const unsigned long requestedTimeoutMs = desired["commandTimeoutMs"] | static_cast<unsigned long>(DEFAULT_CLOUD_COMMAND_MAX_AGE_MS);
-  cloudCommandMaxAgeMs = static_cast<uint64_t>(constrain(requestedTimeoutMs, 500UL, 3000UL));
   configRevision = revision;
 
   JsonDocument reported;
@@ -558,7 +515,6 @@ void pollCloudConfig() {
   reported["emergencyPulseMs"] = static_cast<unsigned long>(constrain(desired["emergencyPulseMs"] | MAX_CLOUD_PULSE_MS, MIN_PULSE_MS, MAX_CLOUD_PULSE_MS));
   reported["heartbeatIdleMs"] = cloudHeartbeatIdleMs;
   reported["pollMs"] = cloudPollMs;
-  reported["commandTimeoutMs"] = cloudCommandMaxAgeMs;
   reported["revision"] = configRevision;
   reported["reportedAt"] = nowEpochMs();
   reported["firmware"] = FIRMWARE_VERSION;
@@ -637,19 +593,12 @@ void pollCloudGate() {
     return;
   }
 
-  const uint64_t nowMs = nowEpochMs();
   const uint64_t requestedAt = command["requestedAt"] | (command["requestedAtEsp"] | 0ULL);
-  uint32_t ttlMs = command["ttlMs"] | cloudCommandMaxAgeMs;
-  if (ttlMs == 0 || ttlMs > cloudCommandMaxAgeMs) {
-    ttlMs = cloudCommandMaxAgeMs;
-  }
-  const uint64_t expiresAt = requestedAt + ttlMs;
   const String id = command["id"].as<String>();
   const String requestedBy = command["requestedBy"].as<String>();
 
-  if (id.length() == 0 || requestedBy.length() == 0 || requestedAt == 0 || expiresAt == 0 ||
-      (nowMs > 0 && (expiresAt <= nowMs || requestedAt > nowMs || nowMs - requestedAt > cloudCommandMaxAgeMs))) {
-    discardCloudCommand(id, requestedBy, "expired_or_bad_timestamp");
+  if (id.length() == 0 || requestedBy.length() == 0 || requestedAt == 0) {
+    discardCloudCommand(id, requestedBy, "malformed_cloud_command");
     return;
   }
 
@@ -708,20 +657,6 @@ void startBackupAp() {
   Serial.println(AP_SSID);
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
-}
-
-void stopBackupAp() {
-  if (!apStarted) {
-    return;
-  }
-
-  dnsServer.stop();
-  dnsStarted = false;
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_STA);
-  apStarted = false;
-  mdnsStarted = false;
-  Serial.println("Backup AP stopped; house WiFi connected");
 }
 
 const char WEBPAGE[] = R"rawliteral(
@@ -945,7 +880,6 @@ const char WEBPAGE[] = R"rawliteral(
   <br>
   <div class="button-row">
     <button id="gate">GATE</button>
-    <button id="smartGate">SMART GATE</button>
   </div>
   <button id="rebootEsp" class="reboot" type="button">Reboot ESP</button>
 
@@ -955,7 +889,6 @@ const char WEBPAGE[] = R"rawliteral(
     <div class="row"><span>OPEN raw GPIO34</span><strong id="openRaw">--</strong></div>
     <div class="row"><span>CLOSE raw GPIO35</span><strong id="closeRaw">--</strong></div>
     <div class="row"><span>Pulse length ms</span><input id="pulseInput" type="number" min="100" max="5000" step="50" value="1000"></div>
-    <div class="row"><span>Smart timeout ms</span><input id="smartTimeoutInput" type="number" min="100" max="10000" step="50" value="3000"></div>
     <div class="row"><span>Poll ms</span><div class="control-pair"><input id="pollSlider" type="range" min="25" max="1000" step="25" value="100"><input id="pollInput" type="number" min="25" max="2000" step="25" value="100"></div></div>
     <div class="row"><span>CLOSE noise trigger</span><input id="closeNoiseTriggerInput" type="number" min="0" max="4095" step="25" value="800"></div>
     <div class="row"><span>OPEN noise trigger</span><input id="openNoiseTriggerInput" type="number" min="0" max="4095" step="25" value="800"></div>
@@ -993,7 +926,6 @@ const char WEBPAGE[] = R"rawliteral(
 
   <script>
     const gate = document.getElementById('gate');
-    const smartGate = document.getElementById('smartGate');
     const rebootEsp = document.getElementById('rebootEsp');
     const onlineDot = document.getElementById('onlineDot');
     const onlineText = document.getElementById('onlineText');
@@ -1002,7 +934,6 @@ const char WEBPAGE[] = R"rawliteral(
     const closeRaw = document.getElementById('closeRaw');
     const openRaw = document.getElementById('openRaw');
     const pulseInput = document.getElementById('pulseInput');
-    const smartTimeoutInput = document.getElementById('smartTimeoutInput');
     const pollSlider = document.getElementById('pollSlider');
     const pollInput = document.getElementById('pollInput');
     const closeGraph = document.getElementById('closeGraph');
@@ -1039,7 +970,6 @@ const char WEBPAGE[] = R"rawliteral(
 
     function setGateActive(on) {
       gate.classList.toggle('active', on);
-      smartGate.classList.toggle('active', on);
     }
 
     function clampPoll(value) {
@@ -1176,23 +1106,6 @@ const char WEBPAGE[] = R"rawliteral(
       }
     }
 
-    async function sendSmartPulse() {
-      setGateActive(true);
-      try {
-        const timeout = Math.max(100, Math.min(10000, Number(smartTimeoutInput.value) || 3000));
-        const closeTrigger = readNoiseTrigger(closeNoiseTriggerInput);
-        const openTrigger = readNoiseTrigger(openNoiseTriggerInput);
-        smartTimeoutInput.value = String(timeout);
-        lastCommand.textContent = 'sending smart timeout ' + timeout + ' ms';
-        const response = await fetch('/smart-pulse?timeout=' + encodeURIComponent(String(timeout)) + '&closeTrigger=' + encodeURIComponent(String(closeTrigger)) + '&openTrigger=' + encodeURIComponent(String(openTrigger)), { cache: 'no-store' });
-        const text = await response.text();
-        lastCommand.textContent = 'smart ' + response.status + ' ' + text;
-      } catch (error) {
-        lastCommand.textContent = 'smart send failed';
-        setGateActive(false);
-      }
-    }
-
     async function rebootController() {
       if (!confirm('Reboot the ESP now?')) return;
       rebootEsp.disabled = true;
@@ -1244,7 +1157,6 @@ const char WEBPAGE[] = R"rawliteral(
     }
 
     gate.addEventListener('click', sendPulse);
-    smartGate.addEventListener('click', sendSmartPulse);
     rebootEsp.addEventListener('click', rebootController);
     pollSlider.addEventListener('input', syncPollFromSlider);
     pollInput.addEventListener('change', syncPollFromInput);
@@ -1314,29 +1226,6 @@ void handlePulseMs() {
   server.send(200, "application/json", json);
 }
 
-void handleSmartPulse() {
-  if (gateSignalActive) {
-    server.send(409, "text/plain", "BUSY");
-    return;
-  }
-
-  if (server.hasArg("timeout")) {
-    const long requested = server.arg("timeout").toInt();
-    smartTimeoutMs = static_cast<unsigned long>(constrain(requested, MIN_SMART_TIMEOUT_MS, MAX_SMART_TIMEOUT_MS));
-  }
-
-  if (server.hasArg("closeTrigger")) {
-    smartCloseTrigger = constrain(server.arg("closeTrigger").toInt(), 0, 4095);
-  }
-
-  if (server.hasArg("openTrigger")) {
-    smartOpenTrigger = constrain(server.arg("openTrigger").toInt(), 0, 4095);
-  }
-
-  startSmartGatePulse();
-  server.send(200, "text/plain", "SMART_PULSE");
-}
-
 void handleStatus() {
   const int closeRaw = analogRead(CLOSE_DETECTOR_PIN);
   const int openRaw = analogRead(OPEN_DETECTOR_PIN);
@@ -1349,8 +1238,6 @@ void handleStatus() {
   json += apStarted ? WiFi.softAPIP().toString() : "";
   json += "\",\"gateSignal\":";
   json += gateSignalActive ? "true" : "false";
-  json += ",\"smartPulse\":";
-  json += smartPulseActive ? "true" : "false";
   json += ",\"pulseMs\":";
   json += pulseMs;
   json += ",\"closeDetectorRaw\":";
@@ -1402,7 +1289,7 @@ void startNetworkServices() {
   }
 
   if (!mdnsStarted) {
-    mdnsStarted = apStarted || MDNS.begin(HOSTNAME);
+    mdnsStarted = WiFi.status() == WL_CONNECTED ? MDNS.begin(HOSTNAME) : apStarted;
     Serial.print("IP: ");
     Serial.println(apStarted ? WiFi.softAPIP() : WiFi.localIP());
 
@@ -1438,6 +1325,7 @@ void setup() {
   Serial.println("Gate local firmware");
   Serial.println("GPIO32 is the optocoupler gate signal output");
 
+  startBackupAp();
   connectWifi();
 
   server.on("/", handleRoot);
@@ -1445,7 +1333,6 @@ void setup() {
   server.on("/open", handlePulse);
   server.on("/gate", handlePulse);
   server.on("/cycle", handlePulse);
-  server.on("/smart-pulse", handleSmartPulse);
   server.on("/status", handleStatus);
   server.on("/pulse-ms", handlePulseMs);
   server.on("/reboot", HTTP_POST, handleReboot);
@@ -1464,25 +1351,7 @@ void loop() {
   const unsigned long now = millis();
 
   if (gateSignalActive) {
-    if (smartPulseActive) {
-      const int closeRaw = analogRead(CLOSE_DETECTOR_PIN);
-      const int openRaw = analogRead(OPEN_DETECTOR_PIN);
-      smartCloseMin = min(smartCloseMin, closeRaw);
-      smartCloseMax = max(smartCloseMax, closeRaw);
-      smartOpenMin = min(smartOpenMin, openRaw);
-      smartOpenMax = max(smartOpenMax, openRaw);
-
-      const bool closeStarted = smartCloseMax - smartCloseMin >= smartCloseTrigger;
-      const bool openStarted = smartOpenMax - smartOpenMin >= smartOpenTrigger;
-      const bool timedOut = now - gateSignalStartedMs >= smartTimeoutMs;
-
-      if (closeStarted || openStarted || timedOut) {
-        gateSignalOff();
-        Serial.println("smart_gate_signal=off");
-        finishCloudCommand(timedOut && !closeStarted && !openStarted ? "failed" : "done",
-                           timedOut && !closeStarted && !openStarted ? "smart_timeout" : "smart_detector_moved");
-      }
-    } else if (now - gateSignalStartedMs >= activePulseMs) {
+    if (now - gateSignalStartedMs >= activePulseMs) {
       gateSignalOff();
       Serial.println("gate_signal=off");
       finishCloudCommand("done", "relay_pulse_complete");
@@ -1490,10 +1359,6 @@ void loop() {
   }
 
   if (WiFi.status() == WL_CONNECTED || apStarted) {
-    if (WiFi.status() == WL_CONNECTED && apStarted) {
-      stopBackupAp();
-    }
-
     startNetworkServices();
 
     if (dnsStarted) {

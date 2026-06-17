@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.3.7+20260617] - 2026-06-17
+
+### Fixed
+
+- Removed browser-side command authority from the family gate page. This protects the dumb-GUI invariant: the browser writes intent only, while Firebase/ESP state drives the button display.
+- Removed ESP cloud-command rejection based on local timestamp age. This prevents valid Firebase-published commands being thrown away as `expired_or_bad_timestamp`; Firebase owns command timing and the ESP owns physical actuation.
+- Added prompt Firebase cleanup for unclaimed live commands. If the ESP does not claim a pending live command within the command TTL plus grace, Firebase records `firebase_expired_unclaimed` and retires the single live slot instead of leaving a stuck executable state.
+
+### Added
+
+- Added `SAFETY_INVARIANTS.md` to pin the no-queue, dumb-webapp, Firebase-timing-authority, ESP-actuator-authority rules and prevent regression drift.
+
+## [0.3.6+20260617] - 2026-06-17
+
+### Fixed
+
+- Removed the ESP Firebase-stale self-reboot path so cloud trouble cannot take down local access.
+- Kept the `GateController` backup AP running while the ESP is also connected to house Wi-Fi.
+- Reduced Firebase HTTP request timeout from 5000 ms to 1200 ms so failed cloud calls block the ESP loop for less time.
+
+### Removed
+
+- Removed the local `SMART GATE` pulse mode and `/smart-pulse` endpoint after the detector-start hardware was removed.
+- Removed unused Android widget resources and stale widget installer text. The Android project is now the simple one-tap app only.
+
 ## [0.3.5+20260616] - 2026-06-16
 
 ### Fixed

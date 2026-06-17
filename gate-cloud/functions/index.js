@@ -6,8 +6,9 @@ admin.initializeApp();
 const db = admin.database();
 const COMMAND_TIMEOUT_MS = 3000;
 const LIVE_SLOT_RETIRE_MS = 10000;
+const UNCLAIMED_COMMAND_GRACE_MS = 500;
 const INSTANCE = 'gate-controller-1b092-default-rtdb';
-const FUNCTION_VERSION = '0.3.4+20260616';
+const FUNCTION_VERSION = '0.3.7+20260617';
 const CAMERA_HLS_BASE = 'http://34.151.126.55:8888/gate/';
 
 function now() {
@@ -375,7 +376,9 @@ exports.onLiveCommandWritten = functions
         expiresAt: latestExpiresAt
       });
       await writeEvent(latestCommand, 'validated', 'waiting_for_esp', at);
-      await new Promise((resolve) => setTimeout(resolve, LIVE_SLOT_RETIRE_MS));
+      await new Promise((resolve) => setTimeout(resolve, commandTtl(latestCommand) + UNCLAIMED_COMMAND_GRACE_MS));
+      await expireIfStillPending(latestCommand.id, 'firebase_expired_unclaimed');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       await retireOldLiveSlot();
       return null;
     }
