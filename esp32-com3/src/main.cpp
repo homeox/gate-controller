@@ -35,8 +35,8 @@ constexpr unsigned long FIREBASE_RECOVERY_COOLDOWN_MS = 30000;
 
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
-const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
-const char *FIRMWARE_VERSION = "0.2.2+20260617";
+const char *FIREBASE_DEVICE_EMAIL = "gate-device-esp32@gate-controller.local";
+const char *FIRMWARE_VERSION = "0.2.3+20260617";
 
 WebServer server(80);
 DNSServer dnsServer;
