@@ -7,6 +7,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_task_wdt.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -32,11 +33,13 @@ constexpr unsigned long FIREBASE_TOKEN_REFRESH_MS = 3300000;
 constexpr unsigned long FIREBASE_AUTH_RECOVERY_MS = 45000;
 constexpr unsigned long FIREBASE_WIFI_RECOVERY_MS = 120000;
 constexpr unsigned long FIREBASE_RECOVERY_COOLDOWN_MS = 30000;
+constexpr unsigned long WATCHDOG_TIMEOUT_S = 12;
+constexpr unsigned long FORCED_RESTART_STALE_MS = 600000;
 
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
 const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
-const char *FIRMWARE_VERSION = "0.2.4+20260617";
+const char *FIRMWARE_VERSION = "0.3.0+20260618";
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -331,6 +334,13 @@ void cloudRecoveryWatchdog(unsigned long now) {
     return;
   }
 
+  if (staleMs >= FORCED_RESTART_STALE_MS) {
+    Serial.println("cloud_stale=forced_restart");
+    delay(500);
+    ESP.restart();
+    return;
+  }
+
   if (staleMs >= FIREBASE_WIFI_RECOVERY_MS) {
     forceWifiReconnect("firebase_stale_wifi_reconnect");
     return;
@@ -341,113 +351,85 @@ void cloudRecoveryWatchdog(unsigned long now) {
   }
 }
 
-void markCloudLogField(const String &path, const char *value) {
-  firebasePutString(path.c_str(), value);
-}
-
 int firebasePatchJson(const String &path, JsonDocument &doc) {
   String body;
   serializeJson(doc, body);
   return firebaseRequest("PATCH", path.c_str(), body);
 }
 
-void writeCloudEvent(const String &id, const char *event, const char *reason) {
-  if (id.length() == 0) {
-    return;
-  }
+void publishCommandUpdate(const String &commandId, const String &requestedBy, const String &sessionId, const char *status, const char *reason, bool updateLiveCommand, bool updateState) {
+  if (commandId.length() == 0) return;
   const uint64_t nowMs = nowEpochMs();
-  if (nowMs == 0) {
-    return;
+  if (nowMs == 0) return;
+
+  JsonDocument multi;
+
+  if (updateLiveCommand) {
+    multi["gate/liveCommand/status"] = status;
+    multi["gate/liveCommand/resultReason"] = reason;
+    multi["gate/liveCommand/doneAt"] = nowMs;
+    multi["gate/liveCommand/closedAt"] = nowMs;
   }
 
-  JsonDocument doc;
-  doc["commandId"] = id;
-  doc["event"] = event;
-  doc["at"] = nowMs;
-  doc["actor"] = "esp32";
-  doc["sessionId"] = cloudCommandSessionId;
-  doc["status"] = event;
-  doc["reason"] = reason;
+  multi[String("gate/commandRecords/") + commandId + "/status"] = status;
+  multi[String("gate/commandRecords/") + commandId + "/resultReason"] = reason;
+  multi[String("gate/commandRecords/") + commandId + "/doneAt"] = nowMs;
 
-  String path = "gate/commandEvents/" + id + "/" + u64ToString(nowMs) + "_esp_" + event;
-  String body;
-  serializeJson(doc, body);
-  firebaseRequest("PUT", path.c_str(), body);
-}
-
-void patchCommandSummary(const String &id, const String &requestedBy, const char *status, uint64_t doneAt, const char *reason) {
-  JsonDocument doc;
-  doc["status"] = status;
-  doc["resultReason"] = reason;
-  if (doneAt > 0) {
-    doc["doneAt"] = doneAt;
-  }
-
-  String recordPath = "gate/commandRecords/" + id;
-  firebasePatchJson(recordPath, doc);
-
-  String logPath = "gate/logs/" + id;
-  firebasePatchJson(logPath, doc);
+  multi[String("gate/logs/") + commandId + "/status"] = status;
+  multi[String("gate/logs/") + commandId + "/resultReason"] = reason;
+  multi[String("gate/logs/") + commandId + "/doneAt"] = nowMs;
 
   if (requestedBy.length() > 0) {
-    String userLogPath = "userLogs/" + requestedBy + "/" + id;
-    firebasePatchJson(userLogPath, doc);
-  }
-}
-
-void publishCloudState(const char *reason) {
-  const uint64_t nowMs = nowEpochMs();
-  if (nowMs == 0) {
-    return;
+    multi[String("userLogs/") + requestedBy + "/" + commandId + "/status"] = status;
+    multi[String("userLogs/") + requestedBy + "/" + commandId + "/resultReason"] = reason;
+    multi[String("userLogs/") + requestedBy + "/" + commandId + "/doneAt"] = nowMs;
   }
 
-  JsonDocument doc;
-  doc["updatedAt"] = nowMs;
-  doc["deviceLastSeen"] = nowMs;
-  doc["liveCommandId"] = cloudCommandId;
-  doc["lastCommandStatus"] = cloudCommandActive ? "active" : "";
-  doc["lastReason"] = reason;
-  doc["configRevision"] = configRevision;
-  doc["lastFirebaseCode"] = lastFirebaseCode;
-  doc["lastCommandPollCode"] = lastCommandPollCode;
-  doc["lastCommandPollAt"] = lastCommandPollAt;
-  doc["lastCommandPollOkAt"] = lastCommandPollOkAt;
-  doc["firebaseRequestCount"] = firebaseRequestCount;
-  doc["firebaseAuthFailureCount"] = firebaseAuthFailureCount;
-  doc["firebaseRequestFailureCount"] = firebaseRequestFailureCount;
-  doc["firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
-  doc["firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
-  doc["firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
-  doc["lastCloudRecoveryReason"] = lastCloudRecoveryReason;
-  doc["lastFirebaseMethod"] = lastFirebaseMethod;
-  doc["lastFirebasePath"] = lastFirebasePath;
-  doc["lastFirebaseFailureMethod"] = lastFirebaseFailureMethod;
-  doc["lastFirebaseFailurePath"] = lastFirebaseFailurePath;
+  const String eventKey = u64ToString(nowMs) + "_esp_" + status;
+  const String eventBase = "gate/commandEvents/" + commandId + "/" + eventKey;
+  multi[eventBase + "/commandId"] = commandId;
+  multi[eventBase + "/event"] = status;
+  multi[eventBase + "/at"] = nowMs;
+  multi[eventBase + "/actor"] = "esp32";
+  multi[eventBase + "/sessionId"] = sessionId;
+  multi[eventBase + "/status"] = status;
+  multi[eventBase + "/reason"] = reason;
+
+  if (updateState) {
+    multi["gate/state/updatedAt"] = nowMs;
+    multi["gate/state/deviceLastSeen"] = nowMs;
+    multi["gate/state/liveCommandId"] = commandId;
+    multi["gate/state/lastCommandStatus"] = "";
+    multi["gate/state/lastReason"] = reason;
+    multi["gate/state/configRevision"] = configRevision;
+    multi["gate/state/lastFirebaseCode"] = lastFirebaseCode;
+    multi["gate/state/lastCommandPollCode"] = lastCommandPollCode;
+    multi["gate/state/lastCommandPollAt"] = lastCommandPollAt;
+    multi["gate/state/lastCommandPollOkAt"] = lastCommandPollOkAt;
+    multi["gate/state/firebaseRequestCount"] = firebaseRequestCount;
+    multi["gate/state/firebaseAuthFailureCount"] = firebaseAuthFailureCount;
+    multi["gate/state/firebaseRequestFailureCount"] = firebaseRequestFailureCount;
+    multi["gate/state/firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
+    multi["gate/state/firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
+    multi["gate/state/firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
+    multi["gate/state/lastCloudRecoveryReason"] = lastCloudRecoveryReason;
+    multi["gate/state/lastFirebaseMethod"] = lastFirebaseMethod;
+    multi["gate/state/lastFirebasePath"] = lastFirebasePath;
+    multi["gate/state/lastFirebaseFailureMethod"] = lastFirebaseFailureMethod;
+    multi["gate/state/lastFirebaseFailurePath"] = lastFirebaseFailurePath;
+  }
 
   String body;
-  serializeJson(doc, body);
-  firebaseRequest("PATCH", "gate/state", body);
+  serializeJson(multi, body);
+  firebaseRequest("PATCH", "", body);
 }
 
-void finishCloudCommand(const char *status, const char *reason = "relay_finished") {
+void finishCloudCommand(const char *status, const char *reason) {
   if (!cloudCommandActive || cloudCommandId.length() == 0) {
     return;
   }
 
-  const uint64_t nowMs = nowEpochMs();
-
-  JsonDocument livePatch;
-  livePatch["status"] = status;
-  livePatch["resultReason"] = reason;
-  if (nowMs > 0) {
-    livePatch["doneAt"] = nowMs;
-    livePatch["closedAt"] = nowMs;
-  }
-  firebasePatchJson("gate/liveCommand", livePatch);
-
-  patchCommandSummary(cloudCommandId, cloudCommandRequestedBy, status, nowMs, reason);
-  writeCloudEvent(cloudCommandId, status, reason);
-  publishCloudState(reason);
+  publishCommandUpdate(cloudCommandId, cloudCommandRequestedBy, cloudCommandSessionId, status, reason, true, true);
 
   cloudCommandActive = false;
   cloudCommandId = "";
@@ -457,39 +439,58 @@ void finishCloudCommand(const char *status, const char *reason = "relay_finished
 
 void updateCloudHeartbeat() {
   const uint64_t nowMs = nowEpochMs();
-  if (nowMs == 0) {
-    return;
-  }
+  if (nowMs == 0) return;
 
   JsonDocument doc;
-  doc["lastSeen"] = nowMs;
-  doc["ip"] = WiFi.localIP().toString();
-  doc["firmware"] = FIRMWARE_VERSION;
-  doc["lastFirebaseCode"] = lastFirebaseCode;
-  doc["lastCommandPollCode"] = lastCommandPollCode;
-  doc["lastCommandPollAt"] = lastCommandPollAt;
-  doc["lastCommandPollOkAt"] = lastCommandPollOkAt;
-  doc["firebaseRequestCount"] = firebaseRequestCount;
-  doc["firebaseAuthFailureCount"] = firebaseAuthFailureCount;
-  doc["firebaseRequestFailureCount"] = firebaseRequestFailureCount;
-  doc["firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
-  doc["firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
-  doc["firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
-  doc["lastCloudRecoveryReason"] = lastCloudRecoveryReason;
-  doc["lastFirebaseMethod"] = lastFirebaseMethod;
-  doc["lastFirebasePath"] = lastFirebasePath;
-  doc["lastFirebaseFailureMethod"] = lastFirebaseFailureMethod;
-  doc["lastFirebaseFailurePath"] = lastFirebaseFailurePath;
-  doc["configRevision"] = configRevision;
-  doc["pulseMs"] = pulseMs;
-  doc["heartbeatIdleMs"] = cloudHeartbeatIdleMs;
-  doc["pollMs"] = cloudPollMs;
-  doc["rssi"] = WiFi.RSSI();
+  doc["gate/device/lastSeen"] = nowMs;
+  doc["gate/device/ip"] = WiFi.localIP().toString();
+  doc["gate/device/firmware"] = FIRMWARE_VERSION;
+  doc["gate/device/lastFirebaseCode"] = lastFirebaseCode;
+  doc["gate/device/lastCommandPollCode"] = lastCommandPollCode;
+  doc["gate/device/lastCommandPollAt"] = lastCommandPollAt;
+  doc["gate/device/lastCommandPollOkAt"] = lastCommandPollOkAt;
+  doc["gate/device/firebaseRequestCount"] = firebaseRequestCount;
+  doc["gate/device/firebaseAuthFailureCount"] = firebaseAuthFailureCount;
+  doc["gate/device/firebaseRequestFailureCount"] = firebaseRequestFailureCount;
+  doc["gate/device/firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
+  doc["gate/device/firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
+  doc["gate/device/firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
+  doc["gate/device/lastCloudRecoveryReason"] = lastCloudRecoveryReason;
+  doc["gate/device/lastFirebaseMethod"] = lastFirebaseMethod;
+  doc["gate/device/lastFirebasePath"] = lastFirebasePath;
+  doc["gate/device/lastFirebaseFailureMethod"] = lastFirebaseFailureMethod;
+  doc["gate/device/lastFirebaseFailurePath"] = lastFirebaseFailurePath;
+  doc["gate/device/configRevision"] = configRevision;
+  doc["gate/device/pulseMs"] = pulseMs;
+  doc["gate/device/heartbeatIdleMs"] = cloudHeartbeatIdleMs;
+  doc["gate/device/pollMs"] = cloudPollMs;
+  doc["gate/device/rssi"] = WiFi.RSSI();
+
+  doc["gate/state/updatedAt"] = nowMs;
+  doc["gate/state/deviceLastSeen"] = nowMs;
+  doc["gate/state/liveCommandId"] = cloudCommandId;
+  doc["gate/state/lastCommandStatus"] = cloudCommandActive ? "active" : "";
+  doc["gate/state/lastReason"] = lastCloudReason;
+  doc["gate/state/configRevision"] = configRevision;
+  doc["gate/state/lastFirebaseCode"] = lastFirebaseCode;
+  doc["gate/state/lastCommandPollCode"] = lastCommandPollCode;
+  doc["gate/state/lastCommandPollAt"] = lastCommandPollAt;
+  doc["gate/state/lastCommandPollOkAt"] = lastCommandPollOkAt;
+  doc["gate/state/firebaseRequestCount"] = firebaseRequestCount;
+  doc["gate/state/firebaseAuthFailureCount"] = firebaseAuthFailureCount;
+  doc["gate/state/firebaseRequestFailureCount"] = firebaseRequestFailureCount;
+  doc["gate/state/firebaseConsecutiveFailureCount"] = firebaseConsecutiveFailureCount;
+  doc["gate/state/firebaseAuthRecoveryCount"] = firebaseAuthRecoveryCount;
+  doc["gate/state/firebaseWifiRecoveryCount"] = firebaseWifiRecoveryCount;
+  doc["gate/state/lastCloudRecoveryReason"] = lastCloudRecoveryReason;
+  doc["gate/state/lastFirebaseMethod"] = lastFirebaseMethod;
+  doc["gate/state/lastFirebasePath"] = lastFirebasePath;
+  doc["gate/state/lastFirebaseFailureMethod"] = lastFirebaseFailureMethod;
+  doc["gate/state/lastFirebaseFailurePath"] = lastFirebaseFailurePath;
 
   String body;
   serializeJson(doc, body);
-  firebaseRequest("PATCH", "gate/device", body);
-  publishCloudState(lastCloudReason.c_str());
+  firebaseRequest("PATCH", "", body);
 }
 
 void pollCloudConfig() {
@@ -532,11 +533,8 @@ void discardCloudCommand(const String &id, const String &requestedBy, const char
 }
 
 void recordRejectedCloudCommand(const String &id, const String &requestedBy, const char *reason) {
-  const uint64_t nowMs = nowEpochMs();
-  patchCommandSummary(id, requestedBy, "failed", nowMs, reason);
-  writeCloudEvent(id, "failed", reason);
+  publishCommandUpdate(id, requestedBy, "", "failed", reason, false, true);
   lastCloudReason = reason;
-  publishCloudState(reason);
 }
 
 void startCloudPulse(const JsonDocument &command) {
@@ -560,8 +558,7 @@ void startCloudPulse(const JsonDocument &command) {
 
   const int claimCode = firebasePatchJson("gate/liveCommand", claimPatch);
   if (claimCode < 200 || claimCode >= 300) {
-    patchCommandSummary(cloudCommandId, cloudCommandRequestedBy, "failed", nowMs, "esp_claim_write_failed");
-    writeCloudEvent(cloudCommandId, "failed", "esp_claim_write_failed");
+    publishCommandUpdate(cloudCommandId, cloudCommandRequestedBy, cloudCommandSessionId, "failed", "esp_claim_write_failed", false, false);
     cloudCommandActive = false;
     cloudCommandId = "";
     cloudCommandRequestedBy = "";
@@ -1312,6 +1309,12 @@ void setup() {
   Serial.println("Gate local firmware");
   Serial.println("GPIO32 is the optocoupler gate signal output");
 
+  esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true);
+  esp_task_wdt_add(NULL);
+  Serial.print("Watchdog enabled: ");
+  Serial.print(WATCHDOG_TIMEOUT_S);
+  Serial.println("s timeout");
+
   startBackupAp();
   delay(1500);
   connectWifi();
@@ -1336,6 +1339,7 @@ void setup() {
 }
 
 void loop() {
+  esp_task_wdt_reset();
   const unsigned long now = millis();
 
   if (gateSignalActive) {

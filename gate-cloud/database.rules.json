@@ -66,6 +66,11 @@
         ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
       },
 
+      "deviceHealth": {
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('enabled').val() === true || root.child('users').child(auth.uid).child('role').val() === 'device')",
+        ".write": false
+      },
+
       "config": {
         "desired": {
           ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'device')",
@@ -89,10 +94,10 @@
 
       "liveCommand": {
         ".read": "auth != null && (root.child('users').child(auth.uid).child('enabled').val() === true || root.child('users').child(auth.uid).child('role').val() === 'device')",
-        ".write": "auth != null && data.exists() && root.child('users').child(auth.uid).child('role').val() === 'device' && newData.child('id').val() === data.child('id').val() && newData.child('requestedBy').val() === data.child('requestedBy').val() && newData.child('status').val().matches(/^(active|done|failed|expired)$/)",
+        ".write": "auth != null && data.exists() && root.child('users').child(auth.uid).child('role').val() === 'device' && newData.child('id').val() === data.child('id').val() && newData.child('requestedBy').val() === data.child('requestedBy').val() && ((data.child('status').val() === 'pending' && data.child('expiresAt').val() > now && newData.child('status').val().matches(/^(active|failed|expired)$/)) || (data.child('status').val() === 'active' && newData.child('status').val().matches(/^(done|failed)$/)))",
         ".validate": "newData.hasChildren(['id', 'type', 'status', 'sessionId', 'requestedBy', 'requestedByName', 'requestedAt', 'expiresAt'])",
         "status": {
-          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device' && data.parent().child('status').val().matches(/^(pending|active|released)$/) && newData.val().matches(/^(active|done|failed|expired)$/)"
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device' && ((data.parent().child('status').val() === 'pending' && data.parent().child('expiresAt').val() > now && newData.val().matches(/^(active|failed|expired)$/)) || (data.parent().child('status').val() === 'active' && newData.val().matches(/^(done|failed)$/)))"
         },
         "activeAt": {
           ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"

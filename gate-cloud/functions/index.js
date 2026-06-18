@@ -7,8 +7,10 @@ const db = admin.database();
 const COMMAND_TIMEOUT_MS = 3000;
 const LIVE_SLOT_RETIRE_MS = 10000;
 const UNCLAIMED_COMMAND_GRACE_MS = 500;
+const DEVICE_RECOVERING_MS = 20000;
+const DEVICE_UNAVAILABLE_MS = 90000;
 const INSTANCE = 'gate-controller-1b092-default-rtdb';
-const FUNCTION_VERSION = '0.3.7+20260617';
+const FUNCTION_VERSION = '0.3.8+20260617';
 const CAMERA_HLS_BASE = 'http://34.151.126.55:8888/gate/';
 
 function now() {
@@ -149,31 +151,37 @@ async function patchRecord(command, patch) {
 
 async function expireIfStillPending(id, reason) {
   const liveRef = db.ref('gate/liveCommand');
-  const snap = await liveRef.get();
-  if (!snap.exists()) return;
-
-  const command = snap.val();
-  if (!command || (id && command.id !== id) || command.status !== 'pending') return;
-
   const at = now();
-  const expiresAt = commandExpiresAt(command);
-  if (expiresAt && at < expiresAt + 250) return;
+  let expiredCommand = null;
 
-  const updates = {
-    'status': 'expired',
-    'doneAt': at,
-    'closedAt': at,
-    'resultReason': reason
-  };
-  await liveRef.update(updates);
-  await patchRecord(command, {
+  const result = await liveRef.transaction((current) => {
+    if (!current || !current.id) return current;
+    if (id && current.id !== id) return current;
+    if (current.status !== 'pending') return current;
+
+    const expiresAt = commandExpiresAt(current);
+    if (expiresAt && at < expiresAt + 250) return current;
+
+    expiredCommand = {
+      ...current,
+      status: 'expired',
+      doneAt: at,
+      closedAt: at,
+      resultReason: reason
+    };
+    return expiredCommand;
+  });
+
+  if (!result.committed || !expiredCommand) return;
+
+  await patchRecord(expiredCommand, {
     status: 'expired',
     doneAt: at,
     closedAt: at,
     resultReason: reason,
     firebaseExpiredAt: at
   });
-  await writeEvent(command, 'expired_unclaimed', reason, at);
+  await writeEvent(expiredCommand, 'expired_unclaimed', reason, at);
 }
 
 async function retireOldLiveSlot() {
@@ -198,6 +206,36 @@ async function retireOldLiveSlot() {
   }
 }
 
+async function updateDeviceHealth(status, reason, source, at = now(), device = null) {
+  const patch = {
+    status,
+    reason,
+    source,
+    updatedAt: at,
+    functionVersion: FUNCTION_VERSION
+  };
+  if (device && device.lastSeen) patch.lastSeen = Number(device.lastSeen);
+  if (device && device.ip) patch.ip = device.ip;
+  if (device && device.firmware) patch.firmware = device.firmware;
+  await db.ref('gate/deviceHealth').update(patch);
+}
+
+async function refreshDeviceHealth(reason = 'heartbeat_check') {
+  const at = now();
+  const snap = await db.ref('gate/device').get();
+  const device = snap.exists() ? snap.val() : {};
+  const lastSeen = Number(device.lastSeen || 0);
+  const age = lastSeen ? at - lastSeen : Infinity;
+
+  if (lastSeen && age <= DEVICE_RECOVERING_MS) {
+    await updateDeviceHealth('ready', 'heartbeat_fresh', 'firebase', at, device);
+  } else if (lastSeen && age <= DEVICE_UNAVAILABLE_MS) {
+    await updateDeviceHealth('recovering', reason, 'firebase', at, device);
+  } else {
+    await updateDeviceHealth('unavailable', lastSeen ? 'heartbeat_recovery_failed' : 'heartbeat_missing', 'firebase', at, device);
+  }
+}
+
 exports.onCommandRequestCreated = functions
   .runWith({ maxInstances: 10, timeoutSeconds: 30, memory: '256MB' })
   .region('asia-southeast1')
@@ -205,31 +243,13 @@ exports.onCommandRequestCreated = functions
   .ref('/gate/commandRequests/{commandId}')
   .onCreate(async (snap, context) => {
     const request = snap.val();
-    const requestedAt = eventTimeMs(context);
     const processedAt = now();
+    const firebaseReceivedAt = eventTimeMs(context);
 
     if (!request || !request.id || request.id !== context.params.commandId || !request.requestedBy) {
       await snap.ref.update({
         status: 'rejected',
         resultReason: 'firebase_rejected_malformed',
-        processedAt
-      });
-      return null;
-    }
-
-    if (processedAt - requestedAt > COMMAND_TIMEOUT_MS) {
-      const staleCommand = liveCommandFromRequest(request, {}, requestedAt);
-      await patchRecord(staleCommand, {
-        status: 'expired',
-        doneAt: processedAt,
-        closedAt: processedAt,
-        resultReason: 'firebase_request_stale',
-        firebaseRejectedAt: processedAt
-      });
-      await writeEvent(staleCommand, 'request_rejected', 'firebase_request_stale', processedAt);
-      await snap.ref.update({
-        status: 'rejected',
-        resultReason: 'firebase_request_stale',
         processedAt
       });
       return null;
@@ -241,7 +261,7 @@ exports.onCommandRequestCreated = functions
     const adminEmergency = request.type !== 'emergencyPulse' || profile.role === 'admin';
 
     if (!enabled || !adminEmergency) {
-      const rejectedCommand = liveCommandFromRequest(request, profile, requestedAt);
+      const rejectedCommand = liveCommandFromRequest(request, profile, processedAt, firebaseReceivedAt);
       const reason = enabled ? 'firebase_rejected_admin_required' : 'firebase_rejected_access_disabled';
       await patchRecord(rejectedCommand, {
         status: 'failed',
@@ -259,14 +279,14 @@ exports.onCommandRequestCreated = functions
       return null;
     }
 
-    const command = liveCommandFromRequest(request, profile, processedAt, requestedAt);
+    const command = liveCommandFromRequest(request, profile, processedAt, firebaseReceivedAt);
     await patchRecord(command, {
       status: 'pending',
       resultReason: 'firebase_request_received',
-      firebaseReceivedAt: requestedAt,
+      firebaseReceivedAt,
       firebasePublishedAt: processedAt
     });
-    await writeEvent(command, 'request_received', 'waiting_for_live_slot', requestedAt);
+    await writeEvent(command, 'request_received', 'waiting_for_live_slot', processedAt);
 
     const liveRef = db.ref('gate/liveCommand');
     const result = await liveRef.transaction((current) => {
@@ -404,12 +424,29 @@ exports.onLiveCommandWritten = functions
     return null;
   });
 
+exports.onDeviceHeartbeat = functions
+  .runWith({ maxInstances: 2, timeoutSeconds: 10, memory: '128MB' })
+  .region('asia-southeast1')
+  .database.instance(INSTANCE)
+  .ref('/gate/device')
+  .onWrite(async (change) => {
+    if (!change.after.exists()) {
+      await updateDeviceHealth('unavailable', 'heartbeat_missing', 'firebase');
+      return null;
+    }
+
+    const device = change.after.val();
+    await updateDeviceHealth('ready', 'heartbeat_fresh', 'firebase', now(), device);
+    return null;
+  });
+
 exports.watchdogLiveCommand = functions
   .runWith({ maxInstances: 1, timeoutSeconds: 30, memory: '256MB' })
   .region('asia-southeast1')
   .pubsub.schedule('every 1 minutes')
   .timeZone('Australia/Brisbane')
   .onRun(async () => {
+    await refreshDeviceHealth('heartbeat_stale_recovering');
     await expireIfStillPending('', 'firebase_watchdog_expired');
     await retireOldLiveSlot();
     return null;

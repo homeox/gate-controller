@@ -1,7 +1,7 @@
 const app = firebase.initializeApp(window.firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const APP_VERSION = '0.3.7+20260617';
+const APP_VERSION = '0.3.8+20260617';
 
 // Gate command boundary:
 // This web app is a GUI only. It never authors command time, expiry, TTL, or
@@ -88,6 +88,7 @@ let sessionId = localStorage.getItem('gateSessionId') || '';
 let latestLiveCommand = null;
 let latestDevice = {};
 let latestState = {};
+let latestDeviceHealth = {};
 let latestDesiredConfig = {};
 let cameraStarted = false;
 let cameraHls = null;
@@ -289,9 +290,18 @@ function renderGateState() {
   const now = Date.now();
   const accessOk = canUseGate(currentProfile);
   const health = deviceHealth(now);
+  const healthStatus = latestDeviceHealth.status || 'ready';
   const liveStatus = latestLiveCommand && latestLiveCommand.status ? latestLiveCommand.status : '';
 
-  setOnline(accessOk, accessOk ? 'Gate ready' : 'Access disabled');
+  let pillLabel = 'Gate ready';
+  if (!accessOk) {
+    pillLabel = 'Access disabled';
+  } else if (healthStatus === 'recovering') {
+    pillLabel = 'Gate reconnecting';
+  } else if (healthStatus === 'unavailable') {
+    pillLabel = 'Gate unavailable';
+  }
+  setOnline(accessOk && healthStatus !== 'unavailable', pillLabel);
   if (health.seen) {
     const parts = [`last seen ${fmtAge(health.age)}`];
     if (health.ip) parts.push(`IP ${health.ip}`);
@@ -320,8 +330,12 @@ function renderGateState() {
     els.gateMessage.textContent = 'Sent';
   } else if (liveStatus === 'done') {
     els.gateMessage.textContent = 'Gate complete';
-  } else if (liveStatus === 'failed' || liveStatus === 'expired') {
+  } else if (healthStatus === 'unavailable') {
     els.gateMessage.textContent = 'Gate unavailable';
+  } else if (healthStatus === 'recovering') {
+    els.gateMessage.textContent = 'Gate reconnecting';
+  } else if (liveStatus === 'failed' || liveStatus === 'expired') {
+    els.gateMessage.textContent = 'Ready';
   } else {
     els.gateMessage.textContent = 'Ready';
   }
@@ -634,7 +648,7 @@ function sendGatePulse(event) {
     setGateFeedback('sent', 'Sent');
   }).catch((error) => {
     console.warn('[gate] command request send failed', error);
-    setGateFeedback('rejected', 'Gate unavailable');
+    setGateFeedback('rejected', 'Send failed');
     setGateButtonActive(false);
   });
 }
@@ -662,7 +676,7 @@ function watchGate() {
     } else if (command.status === 'done') {
       setGateFeedback('accepted', 'Gate complete');
     } else if (command.status === 'failed' || command.status === 'expired') {
-      setGateFeedback('rejected', 'Gate unavailable');
+      setGateFeedback('idle', 'Ready');
     }
     if (els.emergencyStatus && command.type === 'emergencyPulse') {
       els.emergencyStatus.textContent = command.status === 'done'
@@ -678,6 +692,11 @@ function watchGate() {
 
   db.ref('gate/state').on('value', (snap) => {
     latestState = snap.val() || {};
+    renderGateState();
+  });
+
+  db.ref('gate/deviceHealth').on('value', (snap) => {
+    latestDeviceHealth = snap.val() || {};
     renderGateState();
   });
 }
