@@ -35,8 +35,8 @@ constexpr unsigned long FIREBASE_RECOVERY_COOLDOWN_MS = 30000;
 
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
-const char *FIREBASE_DEVICE_EMAIL = "gate-device-esp32@gate-controller.local";
-const char *FIRMWARE_VERSION = "0.2.3+20260617";
+const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
+const char *FIRMWARE_VERSION = "0.2.4+20260617";
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -531,6 +531,14 @@ void discardCloudCommand(const String &id, const String &requestedBy, const char
   Serial.println("cloud_command_discarded_busy");
 }
 
+void recordRejectedCloudCommand(const String &id, const String &requestedBy, const char *reason) {
+  const uint64_t nowMs = nowEpochMs();
+  patchCommandSummary(id, requestedBy, "failed", nowMs, reason);
+  writeCloudEvent(id, "failed", reason);
+  lastCloudReason = reason;
+  publishCloudState(reason);
+}
+
 void startCloudPulse(const JsonDocument &command) {
   cloudCommandId = command["id"].as<String>();
   cloudCommandRequestedBy = command["requestedBy"].as<String>();
@@ -594,11 +602,23 @@ void pollCloudGate() {
   }
 
   const uint64_t requestedAt = command["requestedAt"] | (command["requestedAtEsp"] | 0ULL);
+  const uint64_t expiresAt = command["expiresAt"] | 0ULL;
   const String id = command["id"].as<String>();
   const String requestedBy = command["requestedBy"].as<String>();
 
-  if (id.length() == 0 || requestedBy.length() == 0 || requestedAt == 0) {
-    discardCloudCommand(id, requestedBy, "malformed_cloud_command");
+  if (id.length() == 0 || requestedBy.length() == 0 || requestedAt == 0 || expiresAt == 0) {
+    recordRejectedCloudCommand(id, requestedBy, "malformed_cloud_command");
+    return;
+  }
+
+  const uint64_t nowMs = nowEpochMs();
+  if (nowMs == 0) {
+    recordRejectedCloudCommand(id, requestedBy, "esp_clock_not_ready");
+    return;
+  }
+
+  if (nowMs > expiresAt) {
+    recordRejectedCloudCommand(id, requestedBy, "esp_expired_command_seen");
     return;
   }
 
@@ -614,32 +634,6 @@ void pollCloudGate() {
   }
 
   startCloudPulse(command);
-}
-
-bool scanWifi() {
-  Serial.println("Scanning WiFi...");
-  const int networkCount = WiFi.scanNetworks();
-
-  if (networkCount <= 0) {
-    Serial.println("No WiFi networks found");
-    return false;
-  }
-
-  bool targetFound = false;
-  for (int i = 0; i < networkCount; ++i) {
-    Serial.print("WiFi network: ");
-    Serial.print(WiFi.SSID(i));
-    Serial.print(" RSSI=");
-    Serial.print(WiFi.RSSI(i));
-    Serial.print(" channel=");
-    Serial.println(WiFi.channel(i));
-
-    if (WiFi.SSID(i) == WIFI_SSID) {
-      targetFound = true;
-    }
-  }
-
-  return targetFound;
 }
 
 void startBackupAp() {
@@ -1264,13 +1258,6 @@ void connectWifi() {
   WiFi.setHostname(HOSTNAME);
   WiFi.setSleep(false);
 
-  if (!scanWifi()) {
-    Serial.print("Target WiFi not visible: ");
-    Serial.println(WIFI_SSID);
-    startBackupAp();
-    return;
-  }
-
   WiFi.mode(apStarted ? WIFI_AP_STA : WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi: ");
@@ -1326,6 +1313,7 @@ void setup() {
   Serial.println("GPIO32 is the optocoupler gate signal output");
 
   startBackupAp();
+  delay(1500);
   connectWifi();
 
   server.on("/", handleRoot);
