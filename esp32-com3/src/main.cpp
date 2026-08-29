@@ -7,7 +7,9 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_system.h>
 #include <esp_task_wdt.h>
+#include <rom/rtc.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -21,6 +23,8 @@ constexpr int OPEN_DETECTOR_PIN = 34;
 constexpr int CLOSE_DETECTOR_PIN = 35;
 
 constexpr unsigned long WIFI_RETRY_MS = 10000;
+constexpr unsigned long NTP_RETRY_MS = 60000;
+constexpr int WIFI_GIVEUP_THRESHOLD = 20;
 constexpr unsigned long DEFAULT_PULSE_MS = 1600;
 constexpr unsigned long MIN_PULSE_MS = 100;
 constexpr unsigned long MAX_PULSE_MS = 5000;
@@ -39,7 +43,7 @@ constexpr unsigned long FORCED_RESTART_STALE_MS = 600000;
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
 const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
-const char *FIRMWARE_VERSION = "0.3.0+20260618";
+const char *FIRMWARE_VERSION = "0.3.1+20260618";
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -88,8 +92,85 @@ String lastFirebaseFailurePath;
 String lastFirebaseFailureMethod;
 String lastCloudRecoveryReason;
 
+// RTC_DATA_ATTR survives warm resets (watchdog, ESP.restart) but not power cycles
+RTC_DATA_ATTR uint32_t bootCount = 0;
+RTC_DATA_ATTR uint32_t consecutiveWifiFailCount = 0;
+RTC_DATA_ATTR uint32_t totalWifiRecoveryCount = 0;
+RTC_DATA_ATTR uint32_t totalWdtResetCount = 0;
+RTC_DATA_ATTR uint32_t totalForcedRestartCount = 0;
+RTC_DATA_ATTR uint32_t lastBootReason = 0;
+
+bool wifiGivenUp = false;
+unsigned long lastNtpRetryMs = 0;
+uint32_t bootCycleCount = 0;
+String bootReasonStr;
+String resetReasonStr;
+
 uint64_t nowEpochMs();
 void startBackupAp();
+
+const char* resetReasonLabel(int reason) {
+  switch (reason) {
+    case 1:  return "POWERON";
+    case 2:  return "EXT_RESET";
+    case 3:  return "SW_RESET";
+    case 4:  return "OWDT_RESET";
+    case 5:  return "DEEPSLEEP";
+    case 6:  return "SDIO_RESET";
+    case 7:  return "TG0WDT_SYS_RESET";
+    case 8:  return "TG1WDT_SYS_RESET";
+    case 9:  return "RTCWDT_SYS_RESET";
+    case 10: return "INTRUSION";
+    case 11: return "TGWDT_CPU_RESET";
+    case 12: return "SW_CPU_RESET";
+    case 13: return "RTCWDT_CPU_RESET";
+    case 14: return "EXT_CPU_RESET";
+    case 15: return "RTCWDT_BROWN_OUT";
+    case 16: return "RTCWDT_RTC_RESET";
+    default: return "UNKNOWN";
+  }
+}
+
+void logBootDiagnostics() {
+  const esp_reset_reason_t reason = esp_reset_reason();
+  lastBootReason = static_cast<uint32_t>(reason);
+  bootReasonStr = resetReasonLabel(reason);
+
+  const int cpu0 = rtc_get_reset_reason(0);
+  const int cpu1 = rtc_get_reset_reason(1);
+  bootCycleCount = bootCount;
+  bootCount++;
+
+  if (reason == ESP_RST_WDT) {
+    totalWdtResetCount++;
+  }
+  if (reason == ESP_RST_SW) {
+    totalForcedRestartCount++;
+  }
+
+  Serial.println();
+  Serial.println("=== Boot Diagnostics ===");
+  Serial.print("Boot count: ");
+  Serial.println(bootCycleCount);
+  Serial.print("Reset reason: ");
+  Serial.println(bootReasonStr);
+  Serial.print("CPU0 reset: ");
+  Serial.println(resetReasonLabel(cpu0));
+  Serial.print("CPU1 reset: ");
+  Serial.println(resetReasonLabel(cpu1));
+  Serial.print("WDT resets total: ");
+  Serial.println(totalWdtResetCount);
+  Serial.print("Forced restarts total: ");
+  Serial.println(totalForcedRestartCount);
+  Serial.print("Total WiFi recovery count: ");
+  Serial.println(totalWifiRecoveryCount);
+  Serial.print("Consecutive WiFi failures: ");
+  Serial.println(consecutiveWifiFailCount);
+  Serial.print("Boot limit reached: ");
+  Serial.println(consecutiveWifiFailCount >= WIFI_GIVEUP_THRESHOLD ? "YES" : "NO");
+  Serial.println("========================");
+  Serial.println();
+}
 
 void gateSignalOff() {
   const bool wasActive = gateSignalActive;
@@ -1235,11 +1316,29 @@ void handleStatus() {
   json += closeRaw;
   json += ",\"openDetectorRaw\":";
   json += openRaw;
-  json += "}";
+  json += ",\"bootCount\":";
+  json += bootCycleCount;
+  json += ",\"bootReason\":\"";
+  json += bootReasonStr;
+  json += "\",\"wifiGivenUp\":";
+  json += wifiGivenUp ? "true" : "false";
+  json += ",\"consecutiveWifiFails\":";
+  json += consecutiveWifiFailCount;
+  json += ",\"wdtResets\":";
+  json += totalWdtResetCount;
+  json += ",\"forcedRestarts\":";
+  json += totalForcedRestartCount;
+  json += ",\"firmware\":\"";
+  json += FIRMWARE_VERSION;
+  json += "\"";
   server.send(200, "application/json", json);
 }
 
 void connectWifi() {
+  if (wifiGivenUp) {
+    return;
+  }
+
   if (apStarted) {
     WiFi.mode(WIFI_AP_STA);
     WiFi.disconnect(false, false);
@@ -1266,10 +1365,22 @@ void startNetworkServices() {
     return;
   }
 
-  if (WiFi.status() == WL_CONNECTED && !timeStarted) {
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
-    timeStarted = true;
-    Serial.println("NTP requested");
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!timeStarted) {
+      configTime(0, 0, "pool.ntp.org", "time.google.com");
+      timeStarted = true;
+      lastNtpRetryMs = millis();
+      Serial.println("NTP requested");
+    }
+
+    timeval tv;
+    const bool timeSynced = gettimeofday(&tv, nullptr) == 0 && tv.tv_sec >= 1700000000;
+
+    if (!timeSynced && millis() - lastNtpRetryMs >= NTP_RETRY_MS) {
+      lastNtpRetryMs = millis();
+      configTime(0, 0, "pool.ntp.org", "time.google.com");
+      Serial.println("NTP retry");
+    }
   }
 
   if (!mdnsStarted) {
@@ -1309,6 +1420,8 @@ void setup() {
   Serial.println("Gate local firmware");
   Serial.println("GPIO32 is the optocoupler gate signal output");
 
+  logBootDiagnostics();
+
   esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true);
   esp_task_wdt_add(NULL);
   Serial.print("Watchdog enabled: ");
@@ -1317,6 +1430,11 @@ void setup() {
 
   startBackupAp();
   delay(1500);
+
+  wifiGivenUp = consecutiveWifiFailCount >= WIFI_GIVEUP_THRESHOLD;
+  if (wifiGivenUp) {
+    Serial.println("wifi_giveup=active_ap_only_mode_slow_wifi_poll");
+  }
   connectWifi();
 
   server.on("/", handleRoot);
@@ -1380,12 +1498,44 @@ void loop() {
 
     cloudRecoveryWatchdog(now);
 
-    if (WiFi.status() != WL_CONNECTED && apStarted && now - lastWifiRetryMs >= WIFI_RETRY_MS) {
-      lastWifiRetryMs = now;
+    if (WiFi.status() != WL_CONNECTED && apStarted) {
+      if (wifiGivenUp) {
+        if (now - lastWifiRetryMs >= 60000) {
+          lastWifiRetryMs = now;
+          wifiGivenUp = false;
+          consecutiveWifiFailCount = 0;
+          Serial.println("wifi_giveup=retry_one_shot");
+          connectWifi();
+        }
+      } else if (now - lastWifiRetryMs >= WIFI_RETRY_MS) {
+        lastWifiRetryMs = now;
+        consecutiveWifiFailCount++;
+        totalWifiRecoveryCount++;
+        if (consecutiveWifiFailCount >= WIFI_GIVEUP_THRESHOLD) {
+          wifiGivenUp = true;
+          Serial.println("wifi_giveup=active_ap_only_mode_slow_wifi_poll");
+        } else {
+          connectWifi();
+        }
+      }
+    }
+  } else if (!apStarted && !wifiGivenUp && now - lastWifiRetryMs >= WIFI_RETRY_MS) {
+    lastWifiRetryMs = now;
+    consecutiveWifiFailCount++;
+    totalWifiRecoveryCount++;
+    wifiConnectedSinceMs = 0;
+    if (consecutiveWifiFailCount >= WIFI_GIVEUP_THRESHOLD) {
+      wifiGivenUp = true;
+      startBackupAp();
+      Serial.println("wifi_giveup=active_ap_only_mode_no_ap_yet");
+    } else {
       connectWifi();
     }
-  } else if (!apStarted && now - lastWifiRetryMs >= WIFI_RETRY_MS) {
-    lastWifiRetryMs = now;
-    connectWifi();
+  }
+
+  // Reset WiFi give-up on successful WiFi connection
+  if (WiFi.status() == WL_CONNECTED && consecutiveWifiFailCount > 0) {
+    consecutiveWifiFailCount = 0;
+    wifiGivenUp = false;
   }
 }
