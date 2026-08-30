@@ -3,6 +3,10 @@
 Single-window app: live DVR camera feed (RTSP via OpenCV) + one-tap gate pulse
 that talks directly to Firebase. No web shell, no relay server.
 
+The RTSP feed self-heals: if the feed is lost (e.g. the ISP reassigns the home
+WAN IP), the app asks the ESP32 via Firebase (gate/network/wanIp), rebuilds the
+feed URL with the current WAN IP, and reconnects.
+
 Credits: PySide6 (UI) + OpenCV (RTSP/H.265 decode).
 
 Run:  python gate_desktop.py
@@ -33,14 +37,32 @@ from PySide6.QtWidgets import (
 
 import secrets  # local module: Firebase credentials (gitignored)
 
-CAMERA_RTSP_URL = "rtsp://101.183.193.134:10554/user=admin&password=&channel=7&stream=0.sdp?"
+# Fallback home WAN IP for the DVR RTSP feed. The app replaces the IP with the
+# ESP-reported value from Firebase whenever the feed is lost.
+CAMERA_RTSP_HOST = "101.183.230.99"
+CAMERA_RTSP_PATH = "/user=admin&password=&channel=7&stream=0.sdp?"
+CAMERA_RTSP_PORT = "10554"
+
+
+def rtsp_url(host: str) -> str:
+    return f"rtsp://{host}:{CAMERA_RTSP_PORT}{CAMERA_RTSP_PATH}"
 
 
 class CameraFeed(QThread):
-    """Decodes the RTSP stream in a background thread and emits frames."""
+    """Decodes the RTSP stream in a background thread and emits frames.
+
+    If the stream cannot be opened, or stops delivering frames for longer
+    than FEED_LOST_TIMEOUT_S, emits feed_lost and exits so the app can
+    re-discover the WAN IP and reconnect.
+    """
 
     frame_ready = Signal(object)  # numpy BGR frame
     status = Signal(str)
+    feed_lost = Signal()
+
+    FEED_LOST_TIMEOUT_S = 8.0
+    OPEN_TIMEOUT_MS = 4000
+    READ_TIMEOUT_MS = 4000
 
     def __init__(self, url: str, parent=None) -> None:
         super().__init__(parent)
@@ -63,13 +85,26 @@ class CameraFeed(QThread):
                 pass
 
     def run(self) -> None:
-        cap = cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
+        # Bounded open/read timeouts: a dead or stale RTSP host (e.g. after
+        # the ISP reassigns the WAN IP) must return within a few seconds so
+        # the app can re-discover the IP and reconnect. Without these, the
+        # ffmpeg stack can block read() for 20s+.
+        cap = cv2.VideoCapture(
+            self._url,
+            cv2.CAP_FFMPEG,
+            [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, self.OPEN_TIMEOUT_MS,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC, self.READ_TIMEOUT_MS,
+            ],
+        )
         self._cap = cap
         if not cap.isOpened():
             self.status.emit("CAMERA OFFLINE")
+            self.feed_lost.emit()
             return
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.status.emit("CONNECTING")
+        last_frame_at = time.monotonic()
         while self._running:
             try:
                 ok, frame = cap.read()
@@ -79,8 +114,13 @@ class CameraFeed(QThread):
             if not ok or frame is None:
                 if not self._running:
                     break
+                if time.monotonic() - last_frame_at > self.FEED_LOST_TIMEOUT_S:
+                    self.status.emit("CAMERA OFFLINE")
+                    self.feed_lost.emit()
+                    break
                 time.sleep(0.5)
                 continue
+            last_frame_at = time.monotonic()
             # Keep a modest frame rate for the UI.
             self.frame_ready.emit(frame)
             time.sleep(0.05)
@@ -104,15 +144,8 @@ class GatePulseThread(QThread):
             self.result.emit(False, str(exc)[:120])
 
 
-def gate_pulse() -> tuple[bool, str]:
-    """Sign in to Firebase and write a command intent.
-
-    Contract (mirrors the Android app / cloud functions):
-    - POST to identitytoolkit signInWithPassword
-    - PUT command intent to /gate/commandRequests/{id} with id == path key
-    - Never authors timing fields; Firebase stamps requestedAt/expiresAt.
-    """
-    # 1. Sign in.
+def firebase_sign_in() -> dict:
+    """Sign in to Firebase Identity Toolkit and return the auth payload."""
     signin_body = json.dumps(
         {
             "email": secrets.EMAIL,
@@ -131,8 +164,38 @@ def gate_pulse() -> tuple[bool, str]:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        auth = json.loads(resp.read().decode())
+        return json.loads(resp.read().decode())
 
+
+def fetch_wan_ip() -> str:
+    """Ask the ESP (via Firebase) for the current home WAN IP.
+
+    The ESP publishes gate/network/wanIp on a slow timer. Returns "" if the
+    ESP has not reported yet or the read fails.
+    """
+    auth = firebase_sign_in()
+    db_url = (
+        f"{secrets.RTDB_URL}/gate/network/wanIp.json"
+        f"?auth={urllib.parse.quote(auth['idToken'])}"
+    )
+    req = urllib.request.Request(db_url)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        text = resp.read().decode().strip()
+    if not text or text == "null":
+        return ""
+    value = json.loads(text)
+    return str(value).strip() if value else ""
+
+
+def gate_pulse() -> tuple[bool, str]:
+    """Sign in to Firebase and write a command intent.
+
+    Contract (mirrors the Android app / cloud functions):
+    - POST to identitytoolkit signInWithPassword
+    - PUT command intent to /gate/commandRequests/{id} with id == path key
+    - Never authors timing fields; Firebase stamps requestedAt/expiresAt.
+    """
+    auth = firebase_sign_in()
     id_token = auth["idToken"]
     uid = auth["localId"]
 
@@ -250,13 +313,45 @@ class MainWindow(QWidget):
         root.addLayout(button_row)
 
         # Camera thread.
-        self.feed_thread = CameraFeed(CAMERA_RTSP_URL, self)
+        self.current_wan_ip = CAMERA_RTSP_HOST
+        self.feed_thread = CameraFeed(rtsp_url(self.current_wan_ip), self)
         self.feed_thread.frame_ready.connect(self.camera.show_frame)
         self.feed_thread.status.connect(self.camera.show_status)
+        self.feed_thread.feed_lost.connect(self.recover_feed)
         self.feed_thread.start()
 
         # Gate pulse worker (reused).
         self.pulse_thread: GatePulseThread | None = None
+        self.recovering = False
+
+    def recover_feed(self) -> None:
+        """Called when the camera feed is lost: ask the ESP (via Firebase) for
+        the current WAN IP, rebuild the feed URL, and reconnect."""
+        if self.recovering:
+            return
+        self.recovering = True
+        self.camera.show_status("RECONNECTING…")
+
+        def do_recover() -> None:
+            try:
+                new_ip = fetch_wan_ip()
+            except Exception as exc:  # noqa: BLE001
+                self.camera.show_status(f"IP CHECK FAILED: {str(exc)[:60]}")
+                self.recovering = False
+                return
+            if new_ip and new_ip != self.current_wan_ip:
+                self.current_wan_ip = new_ip
+            # Restart the feed against the (possibly refreshed) IP.
+            self.feed_thread.stop()
+            self.feed_thread.wait(3000)
+            self.feed_thread = CameraFeed(rtsp_url(self.current_wan_ip), self)
+            self.feed_thread.frame_ready.connect(self.camera.show_frame)
+            self.feed_thread.status.connect(self.camera.show_status)
+            self.feed_thread.feed_lost.connect(self.recover_feed)
+            self.feed_thread.start()
+            self.recovering = False
+
+        QTimer.singleShot(0, do_recover)
 
     def send_pulse(self) -> None:
         if self.pulse_thread is not None and self.pulse_thread.isRunning():

@@ -46,7 +46,7 @@ def test_render_pipeline():
         received["status"] = text
         print(f"status: {text}")
 
-    feed = CameraFeed(gate_desktop.CAMERA_RTSP_URL)
+    feed = CameraFeed(gate_desktop.rtsp_url(gate_desktop.CAMERA_RTSP_HOST))
     feed.frame_ready.connect(on_frame)
     feed.status.connect(on_status)
 
