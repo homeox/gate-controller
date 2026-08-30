@@ -53,6 +53,7 @@ DNSServer dnsServer;
 bool gateSignalActive = false;
 bool mdnsStarted = false;
 bool otaStarted = false;
+bool otaInProgress = false;
 bool apStarted = false;
 bool dnsStarted = false;
 bool timeStarted = false;
@@ -400,7 +401,7 @@ void forceWifiReconnect(const char *reason) {
 }
 
 void cloudRecoveryWatchdog(unsigned long now) {
-  if (!cloudEnabled() || gateSignalActive) {
+  if (!cloudEnabled() || gateSignalActive || otaInProgress) {
     return;
   }
 
@@ -1451,6 +1452,35 @@ void startNetworkServices() {
 
   if (!otaStarted) {
     ArduinoOTA.setHostname(HOSTNAME);
+
+    // Harden OTA against mid-flash resets:
+    // - Force the gate signal off so no physical pulse can fire mid-update.
+    // - Flag otaInProgress so cloudRecoveryWatchdog skips restart/reconnect.
+    // - Feed the task watchdog from onProgress so a slow flash write never
+    //   trips the 12s WDT and reboots the ESP at ~43% of the upload.
+    ArduinoOTA.onStart([]() {
+      otaInProgress = true;
+      if (gateSignalActive) {
+        gateSignalOff();
+        Serial.println("ota_start=gate_signal_forced_off");
+      }
+      Serial.println("OTA start");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+      esp_task_wdt_reset();
+      (void)progress;
+      (void)total;
+    });
+    ArduinoOTA.onEnd([]() {
+      otaInProgress = false;
+      Serial.println("OTA end");
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+      otaInProgress = false;
+      Serial.print("OTA error: ");
+      Serial.println(error);
+    });
+
     ArduinoOTA.begin();
     otaStarted = true;
     Serial.println("OTA ready");
@@ -1536,6 +1566,13 @@ void loop() {
 
     if (otaStarted) {
       ArduinoOTA.handle();
+    }
+
+    // While an OTA update is in flight, keep feeding the task watchdog every
+    // loop pass too - the onProgress callback only fires between chunks, and
+    // this closes the gap so a slow flash write can never trip the 12s WDT.
+    if (otaInProgress) {
+      esp_task_wdt_reset();
     }
 
     if (WiFi.status() == WL_CONNECTED && now - lastCloudConfigPollMs >= CLOUD_CONFIG_POLL_MS) {
