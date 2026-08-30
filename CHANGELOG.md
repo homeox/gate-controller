@@ -4,6 +4,59 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.5.0-desktop] - 2026-08-29
+
+### Added
+
+- New standalone desktop app (`gate-desktop/`): same single-screen design as the
+  Android app - dark theme, live DVR camera feed, and a circular `GATE` button
+  that sends one pulse directly to Firebase.
+- Desktop stack: PySide6 (UI) + OpenCV (in-app RTSP/H.265 decode). No web shell,
+  no relay server. The feed connects straight from the PC to the DVR over the
+  house LAN.
+- Desktop shortcut (`GateCam.lnk`) launches the app headless via `pythonw.exe`
+  (no console window).
+- Headless functional test (`gate-desktop/test_headless.py`) that verifies the
+  decode -> render pipeline and the Firebase pulse contract without a display.
+
+### Changed
+
+- Gate button label renamed from `OPEN GATE` to `GATE` in both the desktop app
+  and the Android `strings.xml` - the button both opens and closes the gate.
+- Desktop app exit path hardened: `cap.release()` unblocks a stuck RTSP read on
+  close, plus a guaranteed `os._exit(0)` so no `pythonw` process is ever left
+  hanging.
+
+### Fixed
+
+- Corrected the DVR RTSP URL: the verified working path is
+  `rtsp://192.168.0.245:554/h264/ch7/main/av_stream`. The earlier
+  `/user=admin&password=&channel=7&stream=0.sdp` format is rejected by the
+  Topsvision server (`451 Parameter Not Understood`).
+
+## [0.4.0-cam] - 2026-08-29
+
+### Changed
+
+- Rebuilt the Android app as a standalone single-screen client (`GateCam`): dark
+  theme, camera card, and a large circular OPEN GATE button.
+- Replaced the WebView web-app shell with a native UI that talks directly to
+  Firebase (sign-in via Identity Toolkit REST, command intent written to
+  `/gate/commandRequests/{id}`).
+- Embedded the DVR camera feed in-app via ExoPlayer's RTSP extension
+  (`media3-exoplayer-rtsp`) instead of the external HLS relay.
+- Dropped the experimental native-SDK camera path (`CameraStreamActivity`,
+  `TsSdkProtocol`) and the 0.1.0 REST client (`GateCommandClient`, `GateConfig`).
+- Moved Firebase credentials into a gitignored `GateSecrets.java`
+  (template: `GateSecrets.example.txt`).
+- Recovered and kept the DVR `umsp/*.bin` protocol templates as assets for
+  future P2P remote-view work.
+
+### Fixed
+
+- Android build now uses AndroidX (`gradle.properties` -> `android.useAndroidX=true`)
+  so media3 dependencies resolve and compile.
+
 ## [0.3.7+20260617] - 2026-06-17
 
 ### Fixed

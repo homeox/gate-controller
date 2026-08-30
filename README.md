@@ -9,7 +9,8 @@ The important design rule is simple: **there is no executable command queue**. F
 - `esp32-com3/` - ESP32 firmware, local diagnostic page, backup AP, OTA, Firebase polling.
 - `gate-cloud/` - Firebase Hosting web app, Realtime Database rules, and Cloud Functions.
 - `camera-relay/` - no-Docker MediaMTX relay notes and config for the gate camera RTSP-to-HLS bridge.
-- `gate-android/` - Android one-tap gate app used for sideload testing.
+- `gate-android/` - standalone Android gate app (`GateCam` v0.4.0-cam): single-screen native UI with DVR camera feed (RTSP via ExoPlayer) and one-tap gate pulse. Talks directly to Firebase - no web app shell.
+- `gate-desktop/` - standalone desktop gate app (`GateCam`): same single-screen design as Android, PySide6 + OpenCV (RTSP/H.265 decode in-app). Runs headless via `pythonw`, launched from a Desktop shortcut.
 - `PROJECT.md` - working handoff notes with live paths, hardware map, commands, and safety rules.
 - `SAFETY_INVARIANTS.md` - non-negotiable command authority and no-queue rules.
 
@@ -179,7 +180,25 @@ http://192.168.4.1/
 
 ## Android
 
-The Android app is a minimal one-tap client. It writes the same single live command slot as the web app. It must not implement a queue or delayed retry.
+The Android app is a standalone single-screen client: it renders the DVR
+camera feed (RTSP, decoded in-app by ExoPlayer's RTSP extension) and sends one
+gate pulse directly to Firebase. It must not implement a queue or delayed
+retry.
+
+The app writes only a command intent to `/gate/commandRequests/{id}`. It never
+authors timing fields (`requestedAt`, `requestedAtEsp`, `expiresAt`, `ttlMs`)
+and never writes `/gate/liveCommand` directly - Firebase Functions stamps
+server time and publishes the single live slot.
+
+Create `app/src/main/java/com/rkiwi/gate/GateSecrets.java` from
+`GateSecrets.example.txt` before building. It is gitignored; never commit real
+Firebase credentials.
+
+The camera feed URL is a constant in `MainActivity.java`
+(`CAMERA_RTSP_URL`). It points at the DVR on the house LAN
+(`rtsp://192.168.0.245:554/...`), so the phone must be on the same LAN as the
+DVR to see the feed. Remote viewing would need the DVR's P2P relay (the
+recovered `UmspClient` protocol) or a MediaMTX relay.
 
 Current local toolchain notes from this workstation:
 
@@ -198,6 +217,35 @@ $env:GRADLE_USER_HOME='D:\GateAndroidTools\gradle-user-home'
 $env:Path="$env:JAVA_HOME\bin;D:\GateAndroidTools\gradle-8.10.2\bin;$env:ANDROID_HOME\platform-tools;$env:Path"
 cd gate-android
 gradle assembleDebug
+```
+
+## Desktop
+
+The desktop app (`gate-desktop/`) is the same standalone single-screen design as
+Android: dark theme, live DVR camera feed, and a circular `GATE` button that
+sends one pulse directly to Firebase. It uses PySide6 for the UI and OpenCV for
+in-app RTSP/H.265 decoding - no web shell, no relay server.
+
+Create `gate-desktop/secrets.py` from `secrets.example.py`. It is gitignored;
+never commit real Firebase credentials.
+
+Run it headless from the Desktop shortcut (`GateCam.lnk`, targets
+`pythonw.exe`), or directly:
+
+```powershell
+cd gate-desktop
+python gate_desktop.py
+```
+
+The camera feed URL is the `CAMERA_RTSP_URL` constant in `gate_desktop.py`. The
+PC must be on the same LAN as the DVR (`192.168.0.245`). The app talks directly
+to the DVR over the local network - USB tethering/adb is not involved.
+
+Functional test (headless, no display needed):
+
+```powershell
+cd gate-desktop
+python test_headless.py
 ```
 
 ## Safety Rules For Future Work

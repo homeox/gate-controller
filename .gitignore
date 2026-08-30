@@ -13,6 +13,7 @@ gate-desktop/secrets.py
 **/build/
 **/node_modules/
 **/.firebase/
+**/__pycache__/
 *.apk
 *.aab
 
@@ -20,6 +21,8 @@ gate-desktop/secrets.py
 gate-android/*.png
 *.log
 *.tmp
+cookies.txt
+snapshot.jpg
 
 # OS/editor
 .DS_Store
