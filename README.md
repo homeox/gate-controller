@@ -195,10 +195,14 @@ Create `app/src/main/java/com/rkiwi/gate/GateSecrets.java` from
 Firebase credentials.
 
 The camera feed URL is a constant in `MainActivity.java`
-(`CAMERA_RTSP_URL`). It points at the DVR on the house LAN
-(`rtsp://192.168.0.245:554/...`), so the phone must be on the same LAN as the
-DVR to see the feed. Remote viewing would need the DVR's P2P relay (the
-recovered `UmspClient` protocol) or a MediaMTX relay.
+(`CAMERA_RTSP_HOST` / `CAMERA_RTSP_PATH`). It points at the DVR's public relay
+(port 10554), so the phone can see the feed from anywhere.
+
+**Feed self-healing**: the home WAN IP is dynamic (ISP reassigns it). The ESP32
+queries its public IP via ipify every 10 minutes and publishes it to
+`gate/network/wanIp` in Firebase. When the app loses the feed (stale IP), it
+asks the ESP via Firebase for the current WAN IP, rebuilds the RTSP URL, and
+reconnects - no hardcoded-IP edits needed after a WAN change.
 
 Current local toolchain notes from this workstation:
 
@@ -237,15 +241,20 @@ cd gate-desktop
 python gate_desktop.py
 ```
 
-The camera feed URL is the `CAMERA_RTSP_URL` constant in `gate_desktop.py`. The
-PC must be on the same LAN as the DVR (`192.168.0.245`). The app talks directly
-to the DVR over the local network - USB tethering/adb is not involved.
+The camera feed URL is the `CAMERA_RTSP_HOST`/`CAMERA_RTSP_PATH` constants in
+`gate_desktop.py`. The PC connects to the DVR's public relay (port 10554) -
+USB tethering/adb is not involved.
 
-Functional test (headless, no display needed):
+**Feed self-healing**: same mechanism as Android - the ESP32 publishes the
+current WAN IP to `gate/network/wanIp` in Firebase; on feed loss the app
+re-fetches it, rebuilds the URL, and reconnects.
+
+Functional tests (headless, no display needed):
 
 ```powershell
 cd gate-desktop
 python test_headless.py
+python test_recovery.py
 ```
 
 ## Safety Rules For Future Work

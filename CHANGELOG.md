@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.6.0-wanip] - 2026-08-30
+
+### Added
+
+- ESP32 WAN-IP reporter: queries the public IP via ipify every 10 minutes and
+  publishes it to `gate/network/wanIp` in Firebase. The apps use this to
+  recover the RTSP feed when the ISP reassigns the home WAN IP - no more
+  hardcoded-IP edits after a WAN change.
+- Desktop app feed self-healing: on feed loss (stale IP), the app fetches the
+  ESP-reported WAN IP from Firebase, rebuilds the RTSP URL, and reconnects.
+  Bounded OpenCV open/read timeouts (4s) prevent a dead host from blocking the
+  recovery loop.
+- Android app feed self-healing: on player error, the app fetches the WAN IP
+  from Firebase and re-prepares the player against the refreshed URL
+  (rate-limited to 30s).
+- Firebase rules for `gate/network` (readable by enabled users, writable by the
+  device role).
+- Headless recovery test (`gate-desktop/test_recovery.py`) verifying the
+  feed-loss signal, URL rebuild, and WAN-IP fetch paths.
+
+### Fixed
+
+- ESP firmware compile: `esp_task_wdt_init` migrated to the new
+  `esp_task_wdt_config_t` API (the old two-arg signature no longer compiles
+  against the installed arduino-esp32 framework).
+
 ## [0.5.0-desktop] - 2026-08-29
 
 ### Added

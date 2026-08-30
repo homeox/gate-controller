@@ -56,6 +56,17 @@
     },
 
     "gate": {
+      "network": {
+        "wanIp": {
+          ".read": "auth != null && (root.child('users').child(auth.uid).child('enabled').val() === true || root.child('users').child(auth.uid).child('role').val() === 'device')",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        },
+        "wanIpUpdatedAt": {
+          ".read": "auth != null && (root.child('users').child(auth.uid).child('enabled').val() === true || root.child('users').child(auth.uid).child('role').val() === 'device')",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"
+        }
+      },
+
       "device": {
         ".read": "auth != null && root.child('users').child(auth.uid).child('enabled').val() === true",
         ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'device'"

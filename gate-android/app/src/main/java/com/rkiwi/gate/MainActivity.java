@@ -9,7 +9,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
@@ -18,6 +17,15 @@ import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.ui.PlayerView;
+
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Standalone gate controller: DVR camera feed (RTSP) + one-tap gate pulse.
@@ -31,16 +39,25 @@ import androidx.media3.ui.PlayerView;
  * We therefore force the software HEVC decoder via
  * MediaCodecSelector.PREFER_SOFTWARE - slower frame rate, but it decodes
  * everywhere.
+ *
+ * The feed self-heals: when playback fails (e.g. the ISP reassigns the home
+ * WAN IP), the app asks the ESP32 via Firebase (gate/network/wanIp) for the
+ * current WAN IP, rebuilds the RTSP URL, and retries.
  */
 public class MainActivity extends Activity {
     private static final String TAG = "GateCam";
-    private static final String CAMERA_RTSP_URL =
-        "rtsp://101.183.193.134:10554/user=admin&password=&channel=7&stream=0.sdp?";
+    private static final String CAMERA_RTSP_HOST = "101.183.230.99";
+    private static final String CAMERA_RTSP_PORT = "10554";
+    private static final String CAMERA_RTSP_PATH =
+        "/user=admin&password=&channel=7&stream=0.sdp?";
+    private static final long RECOVERY_MIN_INTERVAL_MS = 30000L;
 
     private ExoPlayer player;
     private LinearLayout cameraPlaceholder;
     private TextView cameraStatusText;
     private Button gateButton;
+    private String currentRtspHost = CAMERA_RTSP_HOST;
+    private long lastRecoveryAttemptMs = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -59,7 +76,7 @@ public class MainActivity extends Activity {
 
         player = new ExoPlayer.Builder(this, renderersFactory).build();
         playerView.setPlayer(player);
-        player.setMediaItem(MediaItem.fromUri(CAMERA_RTSP_URL));
+        player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
         player.setPlayWhenReady(true);
 
         player.addAnalyticsListener(new AnalyticsListener() {
@@ -84,6 +101,7 @@ public class MainActivity extends Activity {
                 Log.e(TAG, "playback error: " + error.getErrorCodeName()
                     + " (" + error.getMessage() + ")");
                 showCameraStatus(getString(R.string.camera_offline));
+                recoverFeed();
             }
         });
         player.prepare();
@@ -94,6 +112,117 @@ public class MainActivity extends Activity {
                 sendPulse();
             }
         });
+    }
+
+    private static String rtspUrl(String host) {
+        return "rtsp://" + host + ":" + CAMERA_RTSP_PORT + CAMERA_RTSP_PATH;
+    }
+
+    /**
+     * Ask the ESP (via Firebase) for the current home WAN IP, then reconnect
+     * the feed against it. Rate-limited to avoid hammering on repeated errors.
+     */
+    private void recoverFeed() {
+        final long now = System.currentTimeMillis();
+        if (now - lastRecoveryAttemptMs < RECOVERY_MIN_INTERVAL_MS) {
+            return;
+        }
+        lastRecoveryAttemptMs = now;
+
+        new Thread(() -> {
+            try {
+                String wanIp = fetchWanIp();
+                if (wanIp != null && !wanIp.isEmpty() && !wanIp.equals(currentRtspHost)) {
+                    currentRtspHost = wanIp;
+                    Log.i(TAG, "WAN IP updated to " + wanIp + ", reconnecting feed");
+                }
+                runOnUiThread(() -> {
+                    player.stop();
+                    player.clearMediaItems();
+                    player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
+                    player.prepare();
+                    player.setPlayWhenReady(true);
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "feed recovery failed: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private static String fetchWanIp() throws Exception {
+        // Sign in.
+        JSONObject signin = new JSONObject();
+        signin.put("email", GateSecrets.EMAIL);
+        signin.put("password", GateSecrets.PASSWORD);
+        signin.put("returnSecureToken", true);
+
+        JSONObject auth = postJson(
+            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="
+                + GateSecrets.FIREBASE_API_KEY,
+            signin
+        );
+        String idToken = auth.getString("idToken");
+
+        // Read the ESP-reported WAN IP. GET on a string leaf returns a bare
+        // JSON string like "101.183.230.99" (or "null" if absent).
+        HttpURLConnection conn = open(
+            GateSecrets.RTDB_URL + "/gate/network/wanIp.json?auth=" + idToken,
+            "GET"
+        );
+        String text = readText(conn);
+        if (text == null || text.isEmpty() || text.equals("null")) {
+            return "";
+        }
+        // Strip surrounding JSON quotes if present.
+        String ip = text.trim();
+        if (ip.length() >= 2 && ip.charAt(0) == '"' && ip.charAt(ip.length() - 1) == '"') {
+            ip = ip.substring(1, ip.length() - 1);
+        }
+        return ip.trim();
+    }
+
+    private static JSONObject postJson(String url, JSONObject body) throws Exception {
+        HttpURLConnection conn = open(url, "POST");
+        conn.setDoOutput(true);
+        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+        conn.setFixedLengthStreamingMode(bytes.length);
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(bytes);
+        }
+        return readJson(conn);
+    }
+
+    private static HttpURLConnection open(String url, String method) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(8000);
+        conn.setReadTimeout(8000);
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        conn.setRequestProperty("Accept", "application/json");
+        return conn;
+    }
+
+    private static JSONObject readJson(HttpURLConnection conn) throws Exception {
+        String text = readText(conn);
+        int code = conn.getResponseCode();
+        if (code < 200 || code >= 300) {
+            throw new IllegalStateException("HTTP " + code + " " + text);
+        }
+        return new JSONObject(text);
+    }
+
+    private static String readText(HttpURLConnection conn) throws Exception {
+        int code = conn.getResponseCode();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(
+            code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(),
+            StandardCharsets.UTF_8
+        ));
+        StringBuilder builder = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            builder.append(line);
+        }
+        return builder.toString();
     }
 
     private void sendPulse() {
