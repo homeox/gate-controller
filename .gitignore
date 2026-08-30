@@ -2,6 +2,10 @@
 esp32-com3/src/secrets.h
 gate-cloud/.firebaserc
 gate-android/local.properties
+gate-android/keystore.properties
+gate-android/release.keystore
+gate-android/app/src/main/java/com/rkiwi/gate/GateSecrets.java
+gate-desktop/secrets.py
 
 # Build outputs and caches
 **/.pio/
