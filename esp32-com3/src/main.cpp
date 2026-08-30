@@ -39,6 +39,8 @@ constexpr unsigned long FIREBASE_WIFI_RECOVERY_MS = 120000;
 constexpr unsigned long FIREBASE_RECOVERY_COOLDOWN_MS = 30000;
 constexpr unsigned long WATCHDOG_TIMEOUT_S = 12;
 constexpr unsigned long FORCED_RESTART_STALE_MS = 600000;
+constexpr unsigned long WAN_IP_POLL_MS = 600000;   // 10 min between WAN-IP checks
+constexpr unsigned long WAN_IP_HTTP_TIMEOUT_MS = 8000;
 
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
@@ -61,6 +63,7 @@ unsigned long lastWifiRetryMs = 0;
 unsigned long lastCloudPollMs = 0;
 unsigned long lastCloudHeartbeatMs = 0;
 unsigned long lastCloudConfigPollMs = 0;
+unsigned long lastWanIpPollMs = 0;
 unsigned long lastFirebaseOkMs = 0;
 unsigned long lastCloudRecoveryMs = 0;
 unsigned long wifiConnectedSinceMs = 0;
@@ -91,6 +94,7 @@ String lastFirebaseMethod;
 String lastFirebaseFailurePath;
 String lastFirebaseFailureMethod;
 String lastCloudRecoveryReason;
+String lastReportedWanIp;
 
 // RTC_DATA_ATTR survives warm resets (watchdog, ESP.restart) but not power cycles
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -436,6 +440,54 @@ int firebasePatchJson(const String &path, JsonDocument &doc) {
   String body;
   serializeJson(doc, body);
   return firebaseRequest("PATCH", path.c_str(), body);
+}
+
+// Query the current public (WAN) IP via ipify, then publish it to Firebase so
+// the apps can recover the RTSP feed after the ISP reassigns the WAN IP.
+// Called on a slow timer (WAN_IP_POLL_MS). Only writes when the IP changed.
+void pollWanIpAndPublish() {
+  if (!cloudEnabled() || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  if (!http.begin(client, "https://api.ipify.org?format=json")) {
+    return;
+  }
+  http.setTimeout(WAN_IP_HTTP_TIMEOUT_MS);
+  const int code = http.GET();
+  const String response = code == 200 ? http.getString() : "";
+  http.end();
+
+  if (code != 200 || response.length() == 0) {
+    Serial.print("wan_ip_query_failed=");
+    Serial.println(code);
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, response)) {
+    return;
+  }
+  const String ip = doc["ip"].as<String>();
+  if (ip.length() == 0 || ip == lastReportedWanIp) {
+    return;
+  }
+
+  JsonDocument patch;
+  patch["gate/network/wanIp"] = ip;
+  patch["gate/network/wanIpUpdatedAt"] = nowEpochMs();
+  const int patchCode = firebasePatchJson("", patch);
+  if (patchCode >= 200 && patchCode < 300) {
+    lastReportedWanIp = ip;
+    Serial.print("wan_ip_published=");
+    Serial.println(ip);
+  } else {
+    Serial.print("wan_ip_publish_failed=");
+    Serial.println(patchCode);
+  }
 }
 
 void publishCommandUpdate(const String &commandId, const String &requestedBy, const String &sessionId, const char *status, const char *reason, bool updateLiveCommand, bool updateState) {
@@ -1422,7 +1474,12 @@ void setup() {
 
   logBootDiagnostics();
 
-  esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true);
+  esp_task_wdt_config_t wdtConfig = {
+    .timeout_ms = WATCHDOG_TIMEOUT_S * 1000,
+    .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1,
+    .trigger_panic = true,
+  };
+  esp_task_wdt_init(&wdtConfig);
   esp_task_wdt_add(NULL);
   Serial.print("Watchdog enabled: ");
   Serial.print(WATCHDOG_TIMEOUT_S);
@@ -1494,6 +1551,11 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED && !gateSignalActive && now - lastCloudPollMs >= cloudPollMs) {
       lastCloudPollMs = now;
       pollCloudGate();
+    }
+
+    if (WiFi.status() == WL_CONNECTED && now - lastWanIpPollMs >= WAN_IP_POLL_MS) {
+      lastWanIpPollMs = now;
+      pollWanIpAndPublish();
     }
 
     cloudRecoveryWatchdog(now);
