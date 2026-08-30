@@ -1,0 +1,64 @@
+rtsp: false
+hls: true
+hlsAddress: :8080
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsAllowOrigins: ["*"]
+api: false
+metrics: false
+pprof: false
+playback: false
+rtmp: false
+webrtc: false
+srt: false
+moq: false
+
+paths:
+  cam1_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch1/main/av_stream
+    sourceProtocol: tcp
+  cam1_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch1/sub/av_stream
+    sourceProtocol: tcp
+  cam2_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch2/main/av_stream
+    sourceProtocol: tcp
+  cam2_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch2/sub/av_stream
+    sourceProtocol: tcp
+  cam3_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch3/main/av_stream
+    sourceProtocol: tcp
+  cam3_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch3/sub/av_stream
+    sourceProtocol: tcp
+  cam4_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch4/main/av_stream
+    sourceProtocol: tcp
+  cam4_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch4/sub/av_stream
+    sourceProtocol: tcp
+  cam5_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch5/main/av_stream
+    sourceProtocol: tcp
+  cam5_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch5/sub/av_stream
+    sourceProtocol: tcp
+  cam6_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch6/main/av_stream
+    sourceProtocol: tcp
+  cam6_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch6/sub/av_stream
+    sourceProtocol: tcp
+  cam7_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch7/main/av_stream
+    sourceProtocol: tcp
+  cam7_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch7/sub/av_stream
+    sourceProtocol: tcp
+  cam8_main:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch8/main/av_stream
+    sourceProtocol: tcp
+  cam8_sub:
+    source: rtsp://rick:2017@101.188.140.245:10554/h264/ch8/sub/av_stream
+    sourceProtocol: tcp

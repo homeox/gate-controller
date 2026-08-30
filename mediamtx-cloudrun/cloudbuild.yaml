@@ -1,0 +1,40 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - $_ARTIFACT_REGISTRY/mediamtx-cloudrun:latest
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - $_ARTIFACT_REGISTRY/mediamtx-cloudrun:latest
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - mediamtx-cloudrun
+      - --image=$_ARTIFACT_REGISTRY/mediamtx-cloudrun:latest
+      - --region=$_REGION
+      - --platform=managed
+      - --allow-unauthenticated
+      - --memory=256Mi
+      - --cpu=1
+      - --timeout=300
+      - --set-env-vars=RTSP_HOST=$_RTSP_HOST,RTSP_PORT=$_RTSP_PORT,RTSP_USER=$_RTSP_USER,RTSP_PASS=$_RTSP_PASS
+      - --concurrency=100
+      - --no-cpu-throttling
+
+substitutions:
+  _REGION: us-central1
+  _ARTIFACT_REGISTRY: us-central1-docker.pkg.dev/${PROJECT_ID}/mediamtx
+  _RTSP_HOST: change_me
+  _RTSP_PORT: "10554"
+  _RTSP_USER: rick
+  _RTSP_PASS: "2017"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
