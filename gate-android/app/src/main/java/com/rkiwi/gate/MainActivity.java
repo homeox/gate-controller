@@ -1,98 +1,154 @@
 package com.rkiwi.gate;
 
 import android.app.Activity;
-import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
-import android.media.AudioManager;
-import android.media.ToneGenerator;
 import android.os.Bundle;
-import android.view.Window;
-import android.view.WindowManager;
-import android.view.Gravity;
-import android.widget.FrameLayout;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.media3.common.AudioAttributes;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.DefaultRenderersFactory;
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
+import androidx.media3.exoplayer.analytics.AnalyticsListener;
+import androidx.media3.ui.PlayerView;
+
+/**
+ * Standalone gate controller: DVR camera feed (RTSP) + one-tap gate pulse.
+ *
+ * Talks directly to Firebase - no web app shell. The camera feed is the DVR
+ * RTSP stream rendered by ExoPlayer's built-in RTSP extension; the gate
+ * button writes a command intent to Firebase (see GatePulse).
+ *
+ * The DVR encodes H.265 at the non-standard "1080N" resolution (944x1080),
+ * which the Samsung hardware HEVC decoder rejects (MediaCodec Error 0xe).
+ * We therefore force the software HEVC decoder via
+ * MediaCodecSelector.PREFER_SOFTWARE - slower frame rate, but it decodes
+ * everywhere.
+ */
 public class MainActivity extends Activity {
-    private TextView gateButton;
+    private static final String TAG = "GateCam";
+    private static final String CAMERA_RTSP_URL =
+        "rtsp://101.183.193.134:10554/user=admin&password=&channel=7&stream=0.sdp?";
+
+    private ExoPlayer player;
+    private LinearLayout cameraPlaceholder;
+    private TextView cameraStatusText;
+    private Button gateButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        configureSmallWindow();
-        GateConfig.ensureDefaultLogin(this);
-        showPulseScreen();
-        playPressTone();
-        Toast.makeText(this, "Gate signal sending", Toast.LENGTH_SHORT).show();
+        setContentView(R.layout.activity_main);
 
-        new Thread(() -> {
-            GateCommandClient.Result result = GateCommandClient.sendPulse(
-                this,
-                GateConfig.email(this),
-                GateConfig.password(this)
-            );
-            runOnUiThread(() -> {
-                Toast.makeText(this, result.ok ? "Gate signal sent" : "Gate " + result.message, Toast.LENGTH_SHORT).show();
-                finish();
-            });
-        }).start();
+        cameraPlaceholder = findViewById(R.id.cameraPlaceholder);
+        cameraStatusText = findViewById(R.id.cameraStatusText);
+        gateButton = findViewById(R.id.gateButton);
+
+        PlayerView playerView = findViewById(R.id.playerView);
+
+        // Force the software H.265 decoder (see class javadoc for why).
+        DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(this);
+        renderersFactory.setMediaCodecSelector(MediaCodecSelector.PREFER_SOFTWARE);
+
+        player = new ExoPlayer.Builder(this, renderersFactory).build();
+        playerView.setPlayer(player);
+        player.setMediaItem(MediaItem.fromUri(CAMERA_RTSP_URL));
+        player.setPlayWhenReady(true);
+
+        player.addAnalyticsListener(new AnalyticsListener() {
+            @Override
+            public void onVideoDecoderInitialized(
+                    EventTime eventTime, String decoderName,
+                    long initializedTimestampMs, long initializationDurationMs) {
+                Log.i(TAG, "video decoder: " + decoderName);
+            }
+        });
+
+        player.addListener(new Player.Listener() {
+            @Override
+            public void onPlaybackStateChanged(int state) {
+                if (state == Player.STATE_READY) {
+                    hidePlaceholder();
+                }
+            }
+
+            @Override
+            public void onPlayerError(PlaybackException error) {
+                Log.e(TAG, "playback error: " + error.getErrorCodeName()
+                    + " (" + error.getMessage() + ")");
+                showCameraStatus(getString(R.string.camera_offline));
+            }
+        });
+        player.prepare();
+
+        gateButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                sendPulse();
+            }
+        });
     }
 
-    private void configureSmallWindow() {
-        Window window = getWindow();
-        if (window == null) return;
-        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        window.setDimAmount(0.0f);
-        WindowManager.LayoutParams params = window.getAttributes();
-        params.width = (int) (220 * getResources().getDisplayMetrics().density);
-        params.height = (int) (72 * getResources().getDisplayMetrics().density);
-        params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        params.y = (int) (36 * getResources().getDisplayMetrics().density);
-        window.setAttributes(params);
+    private void sendPulse() {
+        gateButton.setEnabled(false);
+        cameraStatusText.setText(getString(R.string.sending_pulse));
+        GatePulse.openGate(new GatePulse.Callback() {
+            @Override
+            public void onResult(final boolean ok, final String message) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        gateButton.setEnabled(true);
+                        if (ok) {
+                            cameraStatusText.setText(getString(R.string.pulse_sent));
+                        } else {
+                            cameraStatusText.setText(getString(R.string.pulse_failed, message));
+                        }
+                        Toast.makeText(MainActivity.this,
+                            ok ? getString(R.string.pulse_sent) : getString(R.string.pulse_failed, message),
+                            Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
     }
 
-    private void showPulseScreen() {
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.TRANSPARENT);
-
-        gateButton = new TextView(this);
-        gateButton.setText("GATE");
-        gateButton.setTextColor(Color.WHITE);
-        gateButton.setTextSize(20);
-        gateButton.setGravity(Gravity.CENTER);
-        gateButton.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        gateButton.setBackgroundResource(R.drawable.gate_pulse_tile);
-
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        );
-        params.gravity = Gravity.CENTER;
-        root.addView(gateButton, params);
-        setContentView(root);
-
-        gateButton.setScaleX(0.92f);
-        gateButton.setScaleY(0.92f);
-        gateButton.animate()
-            .scaleX(1.08f)
-            .scaleY(1.08f)
-            .alpha(0.85f)
-            .setDuration(160)
-            .withEndAction(() -> gateButton.animate()
-                .scaleX(1.0f)
-                .scaleY(1.0f)
-                .alpha(1.0f)
-                .setDuration(140)
-                .start())
-            .start();
+    private void hidePlaceholder() {
+        cameraPlaceholder.setVisibility(View.GONE);
     }
 
-    private void playPressTone() {
-        try {
-            ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 70);
-            tone.startTone(ToneGenerator.TONE_PROP_ACK, 120);
-            gateButton.postDelayed(tone::release, 220);
-        } catch (RuntimeException ignored) {
+    private void showCameraStatus(String text) {
+        runOnUiThread(() -> {
+            cameraPlaceholder.setVisibility(View.VISIBLE);
+            cameraStatusText.setText(text);
+        });
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (player != null) player.setPlayWhenReady(false);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (player != null) player.setPlayWhenReady(true);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (player != null) {
+            player.release();
+            player = null;
         }
     }
 }

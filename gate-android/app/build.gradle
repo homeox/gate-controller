@@ -2,6 +2,13 @@ plugins {
     id "com.android.application"
 }
 
+// Release signing credentials live in keystore.properties (gitignored).
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file("keystore.properties")
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace "com.rkiwi.gate"
     compileSdk 35
@@ -10,7 +17,32 @@ android {
         applicationId "com.rkiwi.gate"
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 4
+        versionName "0.4.0-cam"
     }
+
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile file(keystoreProps["storeFile"])
+                storePassword keystoreProps["storePassword"]
+                keyAlias keystoreProps["keyAlias"]
+                keyPassword keystoreProps["keyPassword"]
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.media3:media3-exoplayer:1.9.4"
+    implementation "androidx.media3:media3-exoplayer-rtsp:1.9.4"
+    implementation "androidx.media3:media3-ui:1.9.4"
 }

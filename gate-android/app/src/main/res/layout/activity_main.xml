@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:orientation="vertical"
+    android:background="@color/bg_dark"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Title -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="32dp"
+        android:text="@string/title_gate_controller"
+        android:textColor="@color/text_white"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.15"
+        android:textAllCaps="true" />
+
+    <!-- Camera view card -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="8dp"
+        android:background="@drawable/bg_camera_card">
+
+        <!-- RTSP camera feed -->
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/playerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            app:use_controller="false"
+            app:resize_mode="fit" />
+
+        <!-- Placeholder overlay (icon + label), hidden once the feed renders -->
+        <LinearLayout
+            android:id="@+id/cameraPlaceholder"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center">
+
+            <ImageView
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:src="@drawable/ic_camera_view"
+                android:contentDescription="@string/camera_view_label" />
+
+            <TextView
+                android:id="@+id/cameraStatusText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/camera_view_label"
+                android:textColor="@color/text_muted"
+                android:textSize="13sp"
+                android:letterSpacing="0.25"
+                android:textAllCaps="true" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Circular OPEN GATE button -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="16dp"
+        android:paddingBottom="36dp"
+        android:gravity="center_horizontal">
+
+        <Button
+            android:id="@+id/gateButton"
+            android:layout_width="152dp"
+            android:layout_height="152dp"
+            android:layout_gravity="center_horizontal"
+            android:background="@drawable/bg_gate_button"
+            android:drawableTop="@drawable/ic_gate"
+            android:drawablePadding="4dp"
+            android:paddingTop="30dp"
+            android:text="@string/open_gate"
+            android:textColor="@color/text_white"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:textAllCaps="true"
+            android:stateListAnimator="@null" />
+    </FrameLayout>
+</LinearLayout>

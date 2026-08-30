@@ -1,3 +1,13 @@
 <resources>
-    <color name="icon_background">#15803D</color>
+    <!-- App background: dark navy -->
+    <color name="bg_dark">#10161E</color>
+    <!-- Camera card: slightly lighter translucent dark with subtle border -->
+    <color name="card_bg">#1C2733</color>
+    <color name="card_border">#2E3D4E</color>
+    <!-- Accent green (matches live gate button) -->
+    <color name="gate_green">#22C55E</color>
+    <color name="gate_green_pressed">#1A9C49</color>
+    <!-- Text -->
+    <color name="text_white">#FFFFFF</color>
+    <color name="text_muted">#8CA0B3</color>
 </resources>

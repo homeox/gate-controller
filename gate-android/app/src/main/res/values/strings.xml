@@ -1,3 +1,11 @@
 <resources>
-    <string name="app_name">Gate</string>
+    <string name="app_name">GateCam</string>
+    <string name="title_gate_controller">GATE CONTROLLER</string>
+    <string name="camera_view_label">CAMERA VIEW</string>
+    <string name="camera_connecting">CONNECTING…</string>
+    <string name="camera_offline">CAMERA OFFLINE</string>
+    <string name="open_gate">GATE</string>
+    <string name="sending_pulse">SENDING PULSE…</string>
+    <string name="pulse_sent">PULSE SENT</string>
+    <string name="pulse_failed">PULSE FAILED: %1$s</string>
 </resources>
