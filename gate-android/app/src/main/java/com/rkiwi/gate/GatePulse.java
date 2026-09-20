@@ -1,5 +1,7 @@
 package com.rkiwi.gate;
 
+import android.content.Context;
+
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -28,10 +30,11 @@ final class GatePulse {
 
     private GatePulse() {}
 
-    static void openGate(final Callback callback) {
+    static void openGate(Context context, final Callback callback) {
+        final FirebaseSessionManager sessions = FirebaseSessionManager.get(context);
         Thread thread = new Thread(() -> {
             try {
-                Session session = signIn();
+                FirebaseSessionManager.Session session = sessions.getValidSession();
                 String id = UUID.randomUUID().toString().replace("-", "");
                 JSONObject request = new JSONObject();
                 request.put("id", id);
@@ -66,42 +69,6 @@ final class GatePulse {
         });
         thread.setDaemon(true);
         thread.start();
-    }
-
-    private static Session signIn() throws Exception {
-        JSONObject body = new JSONObject();
-        body.put("email", GateSecrets.EMAIL);
-        body.put("password", GateSecrets.PASSWORD);
-        body.put("returnSecureToken", true);
-
-        HttpURLConnection conn = (HttpURLConnection) new URL(
-            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" + GateSecrets.FIREBASE_API_KEY
-        ).openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(15000);
-        try (OutputStream out = conn.getOutputStream()) {
-            out.write(body.toString().getBytes(StandardCharsets.UTF_8));
-        }
-        int code = conn.getResponseCode();
-        String text = readAll(conn, code);
-        if (code < 200 || code >= 300) {
-            throw new IllegalStateException("Sign-in HTTP " + code + " " + trim(text));
-        }
-        JSONObject response = new JSONObject(text);
-        return new Session(response.getString("idToken"), response.getString("localId"));
-    }
-
-    private static final class Session {
-        final String idToken;
-        final String uid;
-
-        Session(String idToken, String uid) {
-            this.idToken = idToken;
-            this.uid = uid;
-        }
     }
 
     private static String readAll(HttpURLConnection conn, int code) throws Exception {

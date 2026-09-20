@@ -18,11 +18,8 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.ui.PlayerView;
 
-import org.json.JSONObject;
-
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -67,6 +64,17 @@ public class MainActivity extends Activity {
         cameraPlaceholder = findViewById(R.id.cameraPlaceholder);
         cameraStatusText = findViewById(R.id.cameraStatusText);
         gateButton = findViewById(R.id.gateButton);
+
+        // Warm the persistent Firebase session without blocking app startup.
+        // On normal launches this refreshes once, then pulses and camera reads
+        // reuse the in-memory ID token.
+        new Thread(() -> {
+            try {
+                FirebaseSessionManager.get(this).getValidSession();
+            } catch (Exception error) {
+                Log.w(TAG, "Firebase session warm-up failed: " + error.getMessage());
+            }
+        }).start();
 
         PlayerView playerView = findViewById(R.id.playerView);
 
@@ -149,24 +157,13 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private static String fetchWanIp() throws Exception {
-        // Sign in.
-        JSONObject signin = new JSONObject();
-        signin.put("email", GateSecrets.EMAIL);
-        signin.put("password", GateSecrets.PASSWORD);
-        signin.put("returnSecureToken", true);
-
-        JSONObject auth = postJson(
-            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="
-                + GateSecrets.FIREBASE_API_KEY,
-            signin
-        );
-        String idToken = auth.getString("idToken");
-
+    private String fetchWanIp() throws Exception {
+        FirebaseSessionManager.Session session =
+            FirebaseSessionManager.get(this).getValidSession();
         // Read the ESP-reported WAN IP. GET on a string leaf returns a bare
         // JSON string like "101.183.230.99" (or "null" if absent).
         HttpURLConnection conn = open(
-            GateSecrets.RTDB_URL + "/gate/network/wanIp.json?auth=" + idToken,
+            GateSecrets.RTDB_URL + "/gate/network/wanIp.json?auth=" + session.idToken,
             "GET"
         );
         String text = readText(conn);
@@ -181,17 +178,6 @@ public class MainActivity extends Activity {
         return ip.trim();
     }
 
-    private static JSONObject postJson(String url, JSONObject body) throws Exception {
-        HttpURLConnection conn = open(url, "POST");
-        conn.setDoOutput(true);
-        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-        conn.setFixedLengthStreamingMode(bytes.length);
-        try (OutputStream out = conn.getOutputStream()) {
-            out.write(bytes);
-        }
-        return readJson(conn);
-    }
-
     private static HttpURLConnection open(String url, String method) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod(method);
@@ -200,15 +186,6 @@ public class MainActivity extends Activity {
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         conn.setRequestProperty("Accept", "application/json");
         return conn;
-    }
-
-    private static JSONObject readJson(HttpURLConnection conn) throws Exception {
-        String text = readText(conn);
-        int code = conn.getResponseCode();
-        if (code < 200 || code >= 300) {
-            throw new IllegalStateException("HTTP " + code + " " + text);
-        }
-        return new JSONObject(text);
     }
 
     private static String readText(HttpURLConnection conn) throws Exception {
@@ -228,7 +205,7 @@ public class MainActivity extends Activity {
     private void sendPulse() {
         gateButton.setEnabled(false);
         cameraStatusText.setText(getString(R.string.sending_pulse));
-        GatePulse.openGate(new GatePulse.Callback() {
+        GatePulse.openGate(this, new GatePulse.Callback() {
             @Override
             public void onResult(final boolean ok, final String message) {
                 runOnUiThread(new Runnable() {
