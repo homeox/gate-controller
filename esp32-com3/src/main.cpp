@@ -12,6 +12,9 @@
 #include <rom/rtc.h>
 #include <sys/time.h>
 #include <time.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 #include "secrets.h"
 
@@ -40,12 +43,13 @@ constexpr unsigned long FIREBASE_RECOVERY_COOLDOWN_MS = 30000;
 constexpr unsigned long WATCHDOG_TIMEOUT_S = 12;
 constexpr unsigned long FORCED_RESTART_STALE_MS = 600000;
 constexpr unsigned long WAN_IP_POLL_MS = 600000;   // 10 min between WAN-IP checks
-constexpr unsigned long WAN_IP_HTTP_TIMEOUT_MS = 8000;
+constexpr unsigned long WAN_IP_RETRY_MS = 30000;   // retry quickly after lookup failure
+constexpr unsigned long WAN_IP_HTTP_TIMEOUT_MS = 5000;
 
 const char *HOSTNAME = "gate-controller";
 const char *AP_SSID = "GateController";
 const char *FIREBASE_DEVICE_EMAIL = "gate-device@gate-controller.local";
-const char *FIRMWARE_VERSION = "0.3.1+20260618";
+const char *FIRMWARE_VERSION = "0.3.2+20260920";
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -96,6 +100,21 @@ String lastFirebaseFailurePath;
 String lastFirebaseFailureMethod;
 String lastCloudRecoveryReason;
 String lastReportedWanIp;
+String pendingWanIp;
+
+struct WanIpQueryResult {
+  int httpCode;
+  char ip[48];
+};
+
+QueueHandle_t wanIpResultQueue = nullptr;
+volatile bool wanIpQueryInFlight = false;
+bool stationWasConnected = false;
+bool pendingWanIpPublish = false;
+int lastWanIpQueryCode = 0;
+uint64_t lastWanIpQueryAt = 0;
+uint64_t lastWanIpPublishAt = 0;
+uint32_t wanIpQueryFailureCount = 0;
 
 // RTC_DATA_ATTR survives warm resets (watchdog, ESP.restart) but not power cycles
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -443,48 +462,95 @@ int firebasePatchJson(const String &path, JsonDocument &doc) {
   return firebaseRequest("PATCH", path.c_str(), body);
 }
 
-// Query the current public (WAN) IP via ipify, then publish it to Firebase so
-// the apps can recover the RTSP feed after the ISP reassigns the WAN IP.
-// Called on a slow timer (WAN_IP_POLL_MS). Only writes when the IP changed.
-void pollWanIpAndPublish() {
-  if (!cloudEnabled() || WiFi.status() != WL_CONNECTED) {
-    return;
+// The public-IP HTTPS lookup can block for several seconds. Run it on a
+// separate FreeRTOS task so it can never stall the gate-command polling loop.
+void wanIpQueryTask(void *) {
+  WanIpQueryResult result = {};
+  // Try independent providers so a single DNS/TLS/service failure cannot
+  // leave the camera address stale after a modem restart.
+  const char *providers[] = {
+      "https://api.ipify.org",
+      "https://checkip.amazonaws.com",
+      "https://icanhazip.com",
+  };
+  for (const char *provider : providers) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    if (!http.begin(client, provider)) {
+      result.httpCode = -1;
+      continue;
+    }
+    http.setTimeout(WAN_IP_HTTP_TIMEOUT_MS);
+    result.httpCode = http.GET();
+    String response = result.httpCode == 200 ? http.getString() : "";
+    http.end();
+    response.trim();
+    IPAddress parsed;
+    if (result.httpCode == 200 && parsed.fromString(response)) {
+      strlcpy(result.ip, response.c_str(), sizeof(result.ip));
+      break;
+    }
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  if (!http.begin(client, "https://api.ipify.org?format=json")) {
-    return;
+  if (wanIpResultQueue != nullptr) {
+    xQueueOverwrite(wanIpResultQueue, &result);
   }
-  http.setTimeout(WAN_IP_HTTP_TIMEOUT_MS);
-  const int code = http.GET();
-  const String response = code == 200 ? http.getString() : "";
-  http.end();
+  wanIpQueryInFlight = false;
+  vTaskDelete(nullptr);
+}
 
-  if (code != 200 || response.length() == 0) {
+void startWanIpQuery() {
+  if (wanIpQueryInFlight || WiFi.status() != WL_CONNECTED) return;
+  wanIpQueryInFlight = true;
+  lastWanIpPollMs = millis();
+  if (xTaskCreatePinnedToCore(wanIpQueryTask, "wan-ip", 6144, nullptr, 1, nullptr, 0) != pdPASS) {
+    wanIpQueryInFlight = false;
+    wanIpQueryFailureCount++;
+    Serial.println("wan_ip_task_start_failed");
+  } else {
+    Serial.println("wan_ip_query_started");
+  }
+}
+
+void collectWanIpQueryResult() {
+  if (wanIpResultQueue == nullptr) return;
+  WanIpQueryResult result = {};
+  if (xQueueReceive(wanIpResultQueue, &result, 0) != pdTRUE) return;
+
+  lastWanIpQueryCode = result.httpCode;
+  lastWanIpQueryAt = nowEpochMs();
+  if (result.httpCode != 200 || result.ip[0] == '\0') {
+    wanIpQueryFailureCount++;
+    // The periodic interval is deliberately long, but failures must heal
+    // promptly after a modem reboot.
+    lastWanIpPollMs = millis() - (WAN_IP_POLL_MS - WAN_IP_RETRY_MS);
     Serial.print("wan_ip_query_failed=");
-    Serial.println(code);
+    Serial.println(result.httpCode);
     return;
   }
 
-  JsonDocument doc;
-  if (deserializeJson(doc, response)) {
-    return;
-  }
-  const String ip = doc["ip"].as<String>();
-  if (ip.length() == 0 || ip == lastReportedWanIp) {
-    return;
-  }
+  pendingWanIp = String(result.ip);
+  pendingWanIpPublish = true;
+  Serial.print("wan_ip_detected=");
+  Serial.println(pendingWanIp);
+}
 
+void publishPendingWanIp() {
+  if (!pendingWanIpPublish || pendingWanIp.length() == 0 ||
+      !cloudEnabled() || WiFi.status() != WL_CONNECTED || nowEpochMs() == 0) {
+    return;
+  }
   JsonDocument patch;
-  patch["gate/network/wanIp"] = ip;
+  patch["gate/network/wanIp"] = pendingWanIp;
   patch["gate/network/wanIpUpdatedAt"] = nowEpochMs();
   const int patchCode = firebasePatchJson("", patch);
   if (patchCode >= 200 && patchCode < 300) {
-    lastReportedWanIp = ip;
+    lastReportedWanIp = pendingWanIp;
+    lastWanIpPublishAt = nowEpochMs();
+    pendingWanIpPublish = false;
     Serial.print("wan_ip_published=");
-    Serial.println(ip);
+    Serial.println(lastReportedWanIp);
   } else {
     Serial.print("wan_ip_publish_failed=");
     Serial.println(patchCode);
@@ -599,6 +665,11 @@ void updateCloudHeartbeat() {
   doc["gate/device/heartbeatIdleMs"] = cloudHeartbeatIdleMs;
   doc["gate/device/pollMs"] = cloudPollMs;
   doc["gate/device/rssi"] = WiFi.RSSI();
+  doc["gate/device/wanIp"] = lastReportedWanIp;
+  doc["gate/device/lastWanIpQueryCode"] = lastWanIpQueryCode;
+  doc["gate/device/lastWanIpQueryAt"] = lastWanIpQueryAt;
+  doc["gate/device/lastWanIpPublishAt"] = lastWanIpPublishAt;
+  doc["gate/device/wanIpQueryFailureCount"] = wanIpQueryFailureCount;
 
   doc["gate/state/updatedAt"] = nowMs;
   doc["gate/state/deviceLastSeen"] = nowMs;
@@ -621,6 +692,10 @@ void updateCloudHeartbeat() {
   doc["gate/state/lastFirebasePath"] = lastFirebasePath;
   doc["gate/state/lastFirebaseFailureMethod"] = lastFirebaseFailureMethod;
   doc["gate/state/lastFirebaseFailurePath"] = lastFirebaseFailurePath;
+  doc["gate/state/lastWanIpQueryCode"] = lastWanIpQueryCode;
+  doc["gate/state/lastWanIpQueryAt"] = lastWanIpQueryAt;
+  doc["gate/state/lastWanIpPublishAt"] = lastWanIpPublishAt;
+  doc["gate/state/wanIpQueryFailureCount"] = wanIpQueryFailureCount;
 
   String body;
   serializeJson(doc, body);
@@ -1383,7 +1458,7 @@ void handleStatus() {
   json += totalForcedRestartCount;
   json += ",\"firmware\":\"";
   json += FIRMWARE_VERSION;
-  json += "\"";
+  json += "\"}";
   server.send(200, "application/json", json);
 }
 
@@ -1504,6 +1579,11 @@ void setup() {
 
   logBootDiagnostics();
 
+  wanIpResultQueue = xQueueCreate(1, sizeof(WanIpQueryResult));
+  if (wanIpResultQueue == nullptr) {
+    Serial.println("wan_ip_queue_create_failed");
+  }
+
   esp_task_wdt_config_t wdtConfig = {
     .timeout_ms = WATCHDOG_TIMEOUT_S * 1000,
     .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1,
@@ -1546,6 +1626,17 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
   const unsigned long now = millis();
+  const bool stationConnected = WiFi.status() == WL_CONNECTED;
+
+  // Boot and every Wi-Fi reconnection trigger an immediate public-IP refresh.
+  // Periodic refreshes republish even an unchanged address, repairing a
+  // missing Firebase network node automatically.
+  if (stationConnected && !stationWasConnected) {
+    Serial.println("wifi_connected_wan_ip_refresh");
+    startWanIpQuery();
+  }
+  stationWasConnected = stationConnected;
+  collectWanIpQueryResult();
 
   if (gateSignalActive) {
     if (now - gateSignalStartedMs >= activePulseMs) {
@@ -1590,9 +1681,15 @@ void loop() {
       pollCloudGate();
     }
 
-    if (WiFi.status() == WL_CONNECTED && now - lastWanIpPollMs >= WAN_IP_POLL_MS) {
-      lastWanIpPollMs = now;
-      pollWanIpAndPublish();
+    // Publish only after the command poll for this loop pass. Firebase writes
+    // retain the existing 1200 ms bound; the slow ipify lookup is off-loop.
+    if (WiFi.status() == WL_CONNECTED && !gateSignalActive) {
+      publishPendingWanIp();
+    }
+
+    if (WiFi.status() == WL_CONNECTED && !wanIpQueryInFlight &&
+        now - lastWanIpPollMs >= WAN_IP_POLL_MS) {
+      startWanIpQuery();
     }
 
     cloudRecoveryWatchdog(now);

@@ -1,6 +1,11 @@
 package com.rkiwi.gate;
 
 import android.app.Activity;
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
@@ -23,6 +28,7 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Standalone gate controller: DVR camera feed (RTSP) + one-tap gate pulse.
@@ -55,6 +61,9 @@ public class MainActivity extends Activity {
     private Button gateButton;
     private String currentRtspHost = CAMERA_RTSP_HOST;
     private long lastRecoveryAttemptMs = 0;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback cellularCallback;
+    private final AtomicBoolean appStarted = new AtomicBoolean(false);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,17 +73,7 @@ public class MainActivity extends Activity {
         cameraPlaceholder = findViewById(R.id.cameraPlaceholder);
         cameraStatusText = findViewById(R.id.cameraStatusText);
         gateButton = findViewById(R.id.gateButton);
-
-        // Warm the persistent Firebase session without blocking app startup.
-        // On normal launches this refreshes once, then pulses and camera reads
-        // reuse the in-memory ID token.
-        new Thread(() -> {
-            try {
-                FirebaseSessionManager.get(this).getValidSession();
-            } catch (Exception error) {
-                Log.w(TAG, "Firebase session warm-up failed: " + error.getMessage());
-            }
-        }).start();
+        gateButton.setEnabled(false);
 
         PlayerView playerView = findViewById(R.id.playerView);
 
@@ -84,7 +83,6 @@ public class MainActivity extends Activity {
 
         player = new ExoPlayer.Builder(this, renderersFactory).build();
         playerView.setPlayer(player);
-        player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
         player.setPlayWhenReady(true);
 
         player.addAnalyticsListener(new AnalyticsListener() {
@@ -112,18 +110,89 @@ public class MainActivity extends Activity {
                 recoverFeed();
             }
         });
-        player.prepare();
-
         gateButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 sendPulse();
             }
         });
+
+        startOnCellularNetwork();
+    }
+
+    /**
+     * GateCam is deliberately independent of the home's Wi-Fi. Bind this
+     * process to mobile data before Firebase or RTSP is opened, even when
+     * Android has automatically reconnected the phone to Wi-Fi.
+     */
+    private void startOnCellularNetwork() {
+        connectivityManager =
+            (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkRequest request = new NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build();
+        cellularCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                if (connectivityManager.bindProcessToNetwork(network)) {
+                    Log.i(TAG, "GateCam traffic bound to cellular network");
+                } else {
+                    Log.w(TAG, "Could not bind GateCam traffic to cellular network");
+                }
+                startAppOnce();
+            }
+
+            @Override
+            public void onUnavailable() {
+                Log.w(TAG, "Cellular network unavailable; using Android default network");
+                startAppOnce();
+            }
+        };
+        connectivityManager.requestNetwork(request, cellularCallback, 8000);
+    }
+
+    private void startAppOnce() {
+        if (!appStarted.compareAndSet(false, true)) return;
+        gateButton.setEnabled(true);
+        new Thread(() -> {
+            try {
+                FirebaseSessionManager.get(this).getValidSession();
+            } catch (Exception error) {
+                Log.w(TAG, "Firebase session warm-up failed: " + error.getMessage());
+            }
+        }).start();
+        startInitialFeed();
     }
 
     private static String rtspUrl(String host) {
         return "rtsp://" + host + ":" + CAMERA_RTSP_PORT + CAMERA_RTSP_PATH;
+    }
+
+    /** Resolve the ESP-published WAN address before starting RTSP playback. */
+    private void startInitialFeed() {
+        showCameraStatus(getString(R.string.camera_connecting));
+        new Thread(() -> {
+            try {
+                String wanIp = fetchWanIp();
+                if (wanIp != null && !wanIp.isEmpty()) {
+                    currentRtspHost = wanIp;
+                    Log.i(TAG, "Starting feed with Firebase WAN IP " + wanIp);
+                } else {
+                    Log.w(TAG, "Firebase WAN IP unavailable; using compiled fallback");
+                }
+            } catch (Exception error) {
+                Log.w(TAG, "Initial WAN IP lookup failed; using compiled fallback: "
+                    + error.getMessage());
+            }
+
+            runOnUiThread(() -> {
+                if (player == null) return;
+                player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
+                player.prepare();
+                player.setPlayWhenReady(true);
+            });
+        }).start();
     }
 
     /**
@@ -252,6 +321,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (connectivityManager != null && cellularCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(cellularCallback);
+            } catch (IllegalArgumentException ignored) {
+                // Callback may already have timed out.
+            }
+            connectivityManager.bindProcessToNetwork(null);
+        }
         if (player != null) {
             player.release();
             player = null;

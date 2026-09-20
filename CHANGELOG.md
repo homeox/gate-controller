@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [0.6.1-recovery] - 2026-09-20
+
+### Fixed
+
+- ESP firmware `0.3.2+20260920` now refreshes the public WAN IP immediately on
+  boot and Wi-Fi reconnection, retries failed lookups after 30 seconds, uses
+  three independent lookup providers, and republishes even an unchanged value
+  so a lost Firebase node repairs itself.
+- WAN-IP HTTPS lookup runs outside the gate-command polling loop, preventing a
+  slow external service from delaying command claims.
+- The ESP `/status` response now emits complete valid JSON.
+- GateCam `0.4.3-cellular` explicitly binds Firebase and RTSP traffic to mobile
+  data, restores its persisted Firebase session, resolves the current WAN IP
+  before opening RTSP, and no longer follows an automatically connected home
+  Wi-Fi route.
+
 ## [0.6.0-wanip] - 2026-08-30
 
 ### Added
