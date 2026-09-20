@@ -90,7 +90,10 @@ Command shape:
 }
 ```
 
-`requestedAt` and `requestedAtEsp` must be Firebase/server-received time, not phone/browser time. The app may record `requestedAtClient` for diagnostics only.
+`requestedAt` and `requestedAtEsp` are stamped when Firebase has validated the
+request and is ready to publish the live command, never from phone/browser
+time. `firebaseReceivedAt` preserves the original server receipt time for
+diagnostics. The app may record `requestedAtClient` for diagnostics only.
 
 The browser is GUI-only for gate commands. It writes a command intent to:
 
@@ -100,7 +103,8 @@ gate/commandRequests/{id}
 
 The browser must not write `requestedAt`, `requestedAtEsp`, `expiresAt`, `ttlMs`, or `gate/liveCommand`.
 
-Firebase Functions stamps server time, mirrors the audit logs, and publishes the executable command to:
+Firebase Functions validates the request, stamps the executable window, and
+publishes the command before performing non-critical audit writes:
 
 ```text
 gate/liveCommand

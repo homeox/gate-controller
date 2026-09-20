@@ -10,7 +10,7 @@ const UNCLAIMED_COMMAND_GRACE_MS = 500;
 const DEVICE_RECOVERING_MS = 20000;
 const DEVICE_UNAVAILABLE_MS = 90000;
 const INSTANCE = 'gate-controller-1b092-default-rtdb';
-const FUNCTION_VERSION = '0.3.8+20260617';
+const FUNCTION_VERSION = '0.3.9+20260920';
 const CAMERA_HLS_BASE = 'http://34.151.126.55:8888/gate/';
 
 function now() {
@@ -279,18 +279,14 @@ exports.onCommandRequestCreated = functions
       return null;
     }
 
-    const command = liveCommandFromRequest(request, profile, processedAt, firebaseReceivedAt);
-    await patchRecord(command, {
-      status: 'pending',
-      resultReason: 'firebase_request_received',
-      firebaseReceivedAt,
-      firebasePublishedAt: processedAt
-    });
-    await writeEvent(command, 'request_received', 'waiting_for_live_slot', processedAt);
-
+    // Start the executable lifetime only after access validation has completed.
+    // Publish the live slot before audit writes so logging latency cannot consume
+    // the ESP's claim window.
+    const validatedAt = now();
+    const command = liveCommandFromRequest(request, profile, validatedAt, firebaseReceivedAt);
     const liveRef = db.ref('gate/liveCommand');
     const result = await liveRef.transaction((current) => {
-      if (isExecutableLiveCommand(current, processedAt)) return current;
+      if (isExecutableLiveCommand(current, validatedAt)) return current;
       return command;
     });
 
@@ -300,16 +296,16 @@ exports.onCommandRequestCreated = functions
     if (!accepted) {
       await patchRecord(command, {
         status: 'failed',
-        doneAt: processedAt,
-        closedAt: processedAt,
+        doneAt: validatedAt,
+        closedAt: validatedAt,
         resultReason: 'firebase_live_slot_busy',
-        firebaseRejectedAt: processedAt
+        firebaseRejectedAt: validatedAt
       });
-      await writeEvent(command, 'request_rejected', 'firebase_live_slot_busy', processedAt);
+      await writeEvent(command, 'request_rejected', 'firebase_live_slot_busy', validatedAt);
       await snap.ref.update({
         status: 'rejected',
         resultReason: 'firebase_live_slot_busy',
-        processedAt
+        processedAt: validatedAt
       });
       return null;
     }
@@ -317,15 +313,18 @@ exports.onCommandRequestCreated = functions
     await patchRecord(command, {
       status: 'pending',
       resultReason: 'live_slot_claimed',
+      firebaseReceivedAt,
+      firebasePublishedAt: validatedAt,
       liveSlotClaimed: true,
-      liveSlotClaimedAt: processedAt,
-      firebaseValidatedAt: processedAt
+      liveSlotClaimedAt: validatedAt,
+      firebaseValidatedAt: validatedAt
     });
-    await writeEvent(command, 'live_slot_claimed', 'waiting_for_esp', processedAt);
+    await writeEvent(command, 'request_received', 'waiting_for_esp', firebaseReceivedAt);
+    await writeEvent(command, 'live_slot_claimed', 'waiting_for_esp', validatedAt);
     await snap.ref.update({
       status: 'accepted',
       resultReason: 'live_slot_claimed',
-      processedAt
+      processedAt: validatedAt
     });
     return null;
   });
