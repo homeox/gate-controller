@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">GateCam</string>
+    <string name="app_name">Gate Controller</string>
     <string name="title_gate_controller">GATE CONTROLLER</string>
     <string name="camera_view_label">CAMERA VIEW</string>
     <string name="camera_connecting">CONNECTING…</string>

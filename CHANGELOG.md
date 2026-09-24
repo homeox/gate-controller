@@ -10,6 +10,7 @@ The project uses Semantic Versioning for source, firmware, web, and cloud functi
 
 - GateCam `0.4.4-threadfix` now enables the gate button on Android's UI thread
   after mobile-data binding, preventing the app from crashing during launch.
+- The Android launcher label is now `Gate Controller`.
 
 ## [0.6.1-recovery] - 2026-09-20
 
