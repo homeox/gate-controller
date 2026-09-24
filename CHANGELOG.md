@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 The project uses Semantic Versioning for source, firmware, web, and cloud function releases.
 
+## [Unreleased]
+
+### Fixed
+
+- GateCam `0.4.4-threadfix` now enables the gate button on Android's UI thread
+  after mobile-data binding, preventing the app from crashing during launch.
+
 ## [0.6.1-recovery] - 2026-09-20
 
 ### Fixed

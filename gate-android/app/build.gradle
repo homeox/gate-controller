@@ -17,8 +17,8 @@ android {
         applicationId "com.rkiwi.gate"
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName "0.4.3-cellular"
+        versionCode 8
+        versionName "0.4.4-threadfix"
     }
 
     signingConfigs {

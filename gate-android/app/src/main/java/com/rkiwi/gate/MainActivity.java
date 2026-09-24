@@ -154,7 +154,7 @@ public class MainActivity extends Activity {
 
     private void startAppOnce() {
         if (!appStarted.compareAndSet(false, true)) return;
-        gateButton.setEnabled(true);
+        runOnUiThread(() -> gateButton.setEnabled(true));
         new Thread(() -> {
             try {
                 FirebaseSessionManager.get(this).getValidSession();
