@@ -2,6 +2,8 @@ package com.rkiwi.gate;
 
 import android.app.Activity;
 import android.content.Context;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -59,6 +61,7 @@ public class MainActivity extends Activity {
     private LinearLayout cameraPlaceholder;
     private TextView cameraStatusText;
     private Button gateButton;
+    private ToneGenerator toneGenerator;
     private String currentRtspHost = CAMERA_RTSP_HOST;
     private long lastRecoveryAttemptMs = 0;
     private ConnectivityManager connectivityManager;
@@ -74,6 +77,7 @@ public class MainActivity extends Activity {
         cameraStatusText = findViewById(R.id.cameraStatusText);
         gateButton = findViewById(R.id.gateButton);
         gateButton.setEnabled(false);
+        toneGenerator = new ToneGenerator(AudioManager.STREAM_MUSIC, 90);
 
         PlayerView playerView = findViewById(R.id.playerView);
 
@@ -83,6 +87,7 @@ public class MainActivity extends Activity {
 
         player = new ExoPlayer.Builder(this, renderersFactory).build();
         playerView.setPlayer(player);
+        player.setVolume(0f);
         player.setPlayWhenReady(true);
 
         player.addAnalyticsListener(new AnalyticsListener() {
@@ -272,6 +277,9 @@ public class MainActivity extends Activity {
     }
 
     private void sendPulse() {
+        if (toneGenerator != null) {
+            toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 150);
+        }
         gateButton.setEnabled(false);
         cameraStatusText.setText(getString(R.string.sending_pulse));
         GatePulse.openGate(this, new GatePulse.Callback() {
@@ -332,6 +340,10 @@ public class MainActivity extends Activity {
         if (player != null) {
             player.release();
             player = null;
+        }
+        if (toneGenerator != null) {
+            toneGenerator.release();
+            toneGenerator = null;
         }
     }
 }
