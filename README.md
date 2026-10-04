@@ -9,7 +9,7 @@ The important design rule is simple: **there is no executable command queue**. F
 - `esp32-com3/` - ESP32 firmware, local diagnostic page, backup AP, OTA, Firebase polling.
 - `gate-cloud/` - Firebase Hosting web app, Realtime Database rules, and Cloud Functions.
 - `camera-relay/` - no-Docker MediaMTX relay notes and config for the gate camera RTSP-to-HLS bridge.
-- `gate-android/` - standalone Android gate app (`Gate Controller` v0.4.5-beep): single-screen native UI with silent DVR camera video (RTSP via ExoPlayer), an audible pulse confirmation, and one-tap gate control. Talks directly to Firebase - no web app shell.
+- `gate-android/` - standalone Android gate app (`Gate Controller` v0.4.6-feed-watchdog): single-screen native UI with silent DVR camera video (RTSP via ExoPlayer), stale-feed recovery, an audible pulse confirmation, and one-tap gate control. Talks directly to Firebase - no web app shell.
 - `gate-desktop/` - standalone desktop gate app (`GateCam`): same single-screen design as Android, PySide6 + OpenCV (RTSP/H.265 decode in-app). Runs headless via `pythonw`, launched from a Desktop shortcut.
 - `PROJECT.md` - working handoff notes with live paths, hardware map, commands, and safety rules.
 - `SAFETY_INVARIANTS.md` - non-negotiable command authority and no-queue rules.

@@ -8,6 +8,10 @@ The project uses Semantic Versioning for source, firmware, web, and cloud functi
 
 ### Fixed
 
+- Gate Controller `0.4.6-feed-watchdog` now detects RTSP sessions that remain
+  nominally ready while frames stop or fall behind real time, flushes stale
+  buffers on recovery, reconnects after activity resume or cellular replacement,
+  and keeps the connecting placeholder visible until the first new frame.
 - GateCam `0.4.4-threadfix` now enables the gate button on Android's UI thread
   after mobile-data binding, preventing the app from crashing during launch.
 - The Android launcher label is now `Gate Controller`.

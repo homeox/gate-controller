@@ -3,12 +3,16 @@ package com.rkiwi.gate;
 import android.app.Activity;
 import android.content.Context;
 import android.media.AudioManager;
+import android.media.MediaFormat;
 import android.media.ToneGenerator;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -19,10 +23,12 @@ import android.widget.Toast;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.Format;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener;
 import androidx.media3.ui.PlayerView;
 
 import java.io.BufferedReader;
@@ -56,6 +62,10 @@ public class MainActivity extends Activity {
     private static final String CAMERA_RTSP_PATH =
         "/user=admin&password=&channel=7&stream=0.sdp?";
     private static final long RECOVERY_MIN_INTERVAL_MS = 30000L;
+    private static final long WATCHDOG_INTERVAL_MS = 2000L;
+    private static final long NO_FRAME_TIMEOUT_MS = 10000L;
+    private static final long MAXIMUM_LAG_GROWTH_MS = 6000L;
+    private static final long RESUME_RECONNECT_THRESHOLD_MS = 1500L;
 
     private ExoPlayer player;
     private LinearLayout cameraPlaceholder;
@@ -64,14 +74,40 @@ public class MainActivity extends Activity {
     private ToneGenerator toneGenerator;
     private String currentRtspHost = CAMERA_RTSP_HOST;
     private long lastRecoveryAttemptMs = 0;
+    private long pausedAtMs = -1L;
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback cellularCallback;
     private final AtomicBoolean appStarted = new AtomicBoolean(false);
+    private final AtomicBoolean recoveryInProgress = new AtomicBoolean(false);
+    private final AtomicBoolean awaitingFirstFrame = new AtomicBoolean(true);
+    private final FeedFreshnessTracker feedFreshness = new FeedFreshnessTracker();
+    private Handler mainHandler;
+    private boolean activityResumed;
+    private final Runnable feedWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (activityResumed && player != null && appStarted.get()
+                    && player.getMediaItemCount() > 0 && player.getPlayWhenReady()) {
+                String reason = feedFreshness.unhealthyReason(
+                    SystemClock.elapsedRealtime(),
+                    NO_FRAME_TIMEOUT_MS,
+                    MAXIMUM_LAG_GROWTH_MS
+                );
+                if (reason != null) {
+                    recoverFeed("watchdog_" + reason, false);
+                }
+            }
+            if (mainHandler != null) {
+                mainHandler.postDelayed(this, WATCHDOG_INTERVAL_MS);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        mainHandler = new Handler(Looper.getMainLooper());
 
         cameraPlaceholder = findViewById(R.id.cameraPlaceholder);
         cameraStatusText = findViewById(R.id.cameraStatusText);
@@ -99,12 +135,24 @@ public class MainActivity extends Activity {
             }
         });
 
+        player.setVideoFrameMetadataListener(new VideoFrameMetadataListener() {
+            @Override
+            public void onVideoFrameAboutToBeRendered(
+                    long presentationTimeUs,
+                    long releaseTimeNs,
+                    Format format,
+                    MediaFormat mediaFormat) {
+                feedFreshness.onFrame(SystemClock.elapsedRealtime(), presentationTimeUs);
+                if (awaitingFirstFrame.compareAndSet(true, false) && mainHandler != null) {
+                    mainHandler.post(() -> hidePlaceholder());
+                }
+            }
+        });
+
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
-                if (state == Player.STATE_READY) {
-                    hidePlaceholder();
-                }
+                Log.d(TAG, "playback state: " + state);
             }
 
             @Override
@@ -112,7 +160,7 @@ public class MainActivity extends Activity {
                 Log.e(TAG, "playback error: " + error.getErrorCodeName()
                     + " (" + error.getMessage() + ")");
                 showCameraStatus(getString(R.string.camera_offline));
-                recoverFeed();
+                recoverFeed("player_error_" + error.getErrorCodeName(), false);
             }
         });
         gateButton.setOnClickListener(new View.OnClickListener() {
@@ -123,6 +171,7 @@ public class MainActivity extends Activity {
         });
 
         startOnCellularNetwork();
+        mainHandler.postDelayed(feedWatchdog, WATCHDOG_INTERVAL_MS);
     }
 
     /**
@@ -145,20 +194,30 @@ public class MainActivity extends Activity {
                 } else {
                     Log.w(TAG, "Could not bind GateCam traffic to cellular network");
                 }
-                startAppOnce();
+                if (!startAppOnce()) {
+                    recoverFeed("cellular_network_available", true);
+                }
+            }
+
+            @Override
+            public void onLost(Network network) {
+                Log.w(TAG, "Cellular network lost; waiting for a replacement network");
+                showCameraStatus(getString(R.string.camera_connecting));
             }
 
             @Override
             public void onUnavailable() {
                 Log.w(TAG, "Cellular network unavailable; using Android default network");
-                startAppOnce();
+                if (!startAppOnce()) {
+                    recoverFeed("cellular_network_unavailable", true);
+                }
             }
         };
         connectivityManager.requestNetwork(request, cellularCallback, 8000);
     }
 
-    private void startAppOnce() {
-        if (!appStarted.compareAndSet(false, true)) return;
+    private boolean startAppOnce() {
+        if (!appStarted.compareAndSet(false, true)) return false;
         runOnUiThread(() -> gateButton.setEnabled(true));
         new Thread(() -> {
             try {
@@ -168,6 +227,7 @@ public class MainActivity extends Activity {
             }
         }).start();
         startInitialFeed();
+        return true;
     }
 
     private static String rtspUrl(String host) {
@@ -193,6 +253,7 @@ public class MainActivity extends Activity {
 
             runOnUiThread(() -> {
                 if (player == null) return;
+                beginFreshnessWindow();
                 player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
                 player.prepare();
                 player.setPlayWhenReady(true);
@@ -204,12 +265,15 @@ public class MainActivity extends Activity {
      * Ask the ESP (via Firebase) for the current home WAN IP, then reconnect
      * the feed against it. Rate-limited to avoid hammering on repeated errors.
      */
-    private void recoverFeed() {
-        final long now = System.currentTimeMillis();
-        if (now - lastRecoveryAttemptMs < RECOVERY_MIN_INTERVAL_MS) {
+    private void recoverFeed(String reason, boolean force) {
+        final long now = SystemClock.elapsedRealtime();
+        if (!force && now - lastRecoveryAttemptMs < RECOVERY_MIN_INTERVAL_MS) {
             return;
         }
+        if (!recoveryInProgress.compareAndSet(false, true)) return;
         lastRecoveryAttemptMs = now;
+        Log.w(TAG, "Reconnecting camera feed: " + reason);
+        showCameraStatus(getString(R.string.camera_connecting));
 
         new Thread(() -> {
             try {
@@ -219,16 +283,29 @@ public class MainActivity extends Activity {
                     Log.i(TAG, "WAN IP updated to " + wanIp + ", reconnecting feed");
                 }
                 runOnUiThread(() -> {
-                    player.stop();
-                    player.clearMediaItems();
-                    player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
-                    player.prepare();
-                    player.setPlayWhenReady(true);
+                    try {
+                        if (player == null) return;
+                        player.stop();
+                        player.clearMediaItems();
+                        beginFreshnessWindow();
+                        player.setMediaItem(MediaItem.fromUri(rtspUrl(currentRtspHost)));
+                        player.prepare();
+                        player.setPlayWhenReady(true);
+                    } finally {
+                        recoveryInProgress.set(false);
+                    }
                 });
             } catch (Exception e) {
-                Log.e(TAG, "feed recovery failed: " + e.getMessage());
+                recoveryInProgress.set(false);
+                Log.e(TAG, "feed recovery failed after " + reason + ": " + e.getMessage());
+                showCameraStatus(getString(R.string.camera_offline));
             }
         }).start();
+    }
+
+    private void beginFreshnessWindow() {
+        awaitingFirstFrame.set(true);
+        feedFreshness.reset(SystemClock.elapsedRealtime());
     }
 
     private String fetchWanIp() throws Exception {
@@ -317,18 +394,37 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        activityResumed = false;
+        pausedAtMs = SystemClock.elapsedRealtime();
+        feedFreshness.stop();
         if (player != null) player.setPlayWhenReady(false);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (player != null) player.setPlayWhenReady(true);
+        activityResumed = true;
+        if (player != null) {
+            boolean reconnectAfterPause = appStarted.get() && pausedAtMs >= 0
+                && SystemClock.elapsedRealtime() - pausedAtMs >= RESUME_RECONNECT_THRESHOLD_MS;
+            if (reconnectAfterPause) {
+                recoverFeed("activity_resumed", true);
+            } else {
+                beginFreshnessWindow();
+                player.setPlayWhenReady(true);
+            }
+        }
+        pausedAtMs = -1L;
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(feedWatchdog);
+            mainHandler = null;
+        }
+        feedFreshness.stop();
         if (connectivityManager != null && cellularCallback != null) {
             try {
                 connectivityManager.unregisterNetworkCallback(cellularCallback);
